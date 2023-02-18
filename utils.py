@@ -1,15 +1,17 @@
 import numpy as np
 import tomopy
-import numpy as np
 from skimage import io
 import glob
-from tqdm import trange
+from tqdm import trange, tqdm
 import FLCorrection_new as FL
 import h5py
+import time 
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 global mask3D
 
-def cal_atten_prj_at_angle(angle, img4D, param, cs, position_det='r', num_cpu=8):
+def cal_atten_prj_at_angle(angle, img4D, param, cs, mask3D, position_det='r', num_cpu=8):
     '''
     calculate the attenuation and projection at single angle
     '''
@@ -28,7 +30,7 @@ def cal_atten_prj_at_angle(angle, img4D, param, cs, position_det='r', num_cpu=8)
     return res
 
 
-def simu_atten_prj(angle_list, img4D, param, cs, position_det='r', file_path='.', num_cpu=8):
+def simu_atten_prj(angle_list, img4D, param, cs, mask3D, position_det='r', file_path='.', num_cpu=8):
     elem_type = cs['elem_type']
     s = img4D.shape
     n_type = s[0]
@@ -39,7 +41,7 @@ def simu_atten_prj(angle_list, img4D, param, cs, position_det='r', file_path='.'
         prj[ele] = np.zeros((n, s[1], s[3]))
     for i in range(n):
         print(f'\nsimu attenuated projection at angle {angle_list[i]}: {i+1}/{n}')
-        res = cal_atten_prj_at_angle(angle_list[i], img4D, param, cs, position_det='r', num_cpu=num_cpu)
+        res = cal_atten_prj_at_angle(angle_list[i], img4D, param, cs, mask3D, position_det='r', num_cpu=num_cpu)
         for j in range(n_type):
             elem = elem_type[j]
             prj[elem][i] = res['prj'][elem]
@@ -105,7 +107,7 @@ def simu_tomography(proj, angle_list, sli=[], num_iter=20):
     return rec
 
 
-def cal_and_save_atten_prj(param, recon4D, angle_list, ref_prj, fsave='./Angle_prj', align_flag=0, num_cpu=8):
+def cal_and_save_atten_prj(param, cs, recon4D, angle_list, ref_prj, mask3D, fsave='./Angle_prj', align_flag=0, num_cpu=8):
     '''
     Function used to calcuate the attenuation coefficents of each elements and all 3D voxels
     results will be saved into the "fsave" folder
@@ -126,7 +128,7 @@ def cal_and_save_atten_prj(param, recon4D, angle_list, ref_prj, fsave='./Angle_p
     prj = np.zeros([Nelem, n_angle, s[1], s[3]])
     for ang in range(n_angle):
         print(f'\ncalculate and save attenuation and projection at angle {angle_list[ang]}: {ang+1}/{n_angle}')
-        res = cal_atten_prj_at_angle(angle_list[ang], recon4D, param, cs, position_det='r', num_cpu=num_cpu)
+        res = cal_atten_prj_at_angle(angle_list[ang], recon4D, param, cs, mask3D, position_det='r', num_cpu=num_cpu)
         for i in range(Nelem):
             elem = elem_type[i]
             if align_flag:
@@ -144,9 +146,8 @@ def simu_absorption_correction(sli, elem, ref_tomo, angle_list, file_path, iter_
     return img_cor
 
 def simu_absorption_correction_mpi(sli, elem, ref_tomo, angle_list, file_path, iter_num):
-    from multiprocessing import Pool, cpu_count
-    from tqdm import tqdm
-    from functools import partial
+
+    
     partial_func = partial(simu_absorption_correction, elem=elem,
                         ref_tomo=ref_tomo, angle_list=angle_list,
                         file_path=file_path, iter_num=iter_num)
@@ -165,9 +166,10 @@ def simu_absorption_correction_mpi(sli, elem, ref_tomo, angle_list, file_path, i
 def prep_detector_mask3D(alfa=15, theta=60, length_maximum=200):
     print('Generating detector 3D mask ...')
     mask = {}
-    for i in trange(length_maximum+1, 7, -1):
+    for i in trange(length_maximum, 6, -1):
         mask[f'{i}'] = FL.generate_detector_mask(alfa, theta, i)
     with h5py.File('mask3D.h5', 'w') as hf:
         for i in range(7, length_maximum+1):
             k = f'{i}'
             hf.create_dataset(k, data=mask[k])
+    return mask

@@ -344,10 +344,17 @@ def generate_detector_mask(alfa0, theta0, leng0):
     s0= (2*N1_0-1, 2*N2_0-1, leng0) # size of "original" matrix
 
     M1 = np.zeros((s[0], s[2]))
-    M11 = M1.copy()
+    #M11 = M1.copy()
     M2 = np.zeros((s[1], s[2]))
-    M22 = M2.copy()
+    #M22 = M2.copy()
 
+    M1 = g_mask((s[0], s[2]), alfa, N1)
+    M2 = g_mask((s[1], s[2]), theta, N2)
+    M1[N1-1,:] = 1
+    M1[N1-1,0] = 0
+    M2[N2-1,:] = 1
+    M2[N2-1,0] = 0
+    """
     for I in range(s[0]):
         for J in range(s[2]):
             i = I+1
@@ -423,9 +430,9 @@ def generate_detector_mask(alfa0, theta0, leng0):
                 tmp=np.arctan(1.0*(N2-k)/j)
                 M22[K,J]=1
                 M2[K,J]=M22[K,J]/np.cos(tmp)
-        M2[N2-1,:] = 1
+    M2[N2-1,:] = 1
     M2[N2-1,0] = 0
-
+    """
     Mask1 = Mask.copy()
     Mask2 = Mask.copy()
 
@@ -457,47 +464,9 @@ def generate_detector_mask(alfa0, theta0, leng0):
     b = dis - a   # decimal part of "dis"
     M_normal = np.zeros(Mask.shape)*shape_mask
 
-    '''
-    for i in range(1, np.int(np.max(dis))+1):
-        flag_mask = np.ones(Mask.shape) # mark the position with radial distance == i
-        temp = np.zeros(Mask.shape)
+    M_normal_ = g_radial_mask(Mask.shape, dis, shape_mask) # generate mask with radial distance
 
-        b_mask1 = np.floor(dis) == i
-        temp += shape_mask * (1-b) * b_mask1
-
-        b_mask2 = np.floor(dis) == i-1
-        temp += shape_mask * b * b_mask2
-
-        b_mask3 = flag_mask > 0
-        temp_sum = np.sum(temp * b_mask3)
-        temp = temp / temp_sum
-
-        flag_mask *= b_mask1 * b_mask2
-        M_normal = M_normal + temp
-
-    '''
-    for i in range(1, np.int16(np.max(dis))+1):
-        flag_mask = np.zeros(Mask.shape) # mark the position with radial distance == i
-        temp = np.zeros(Mask.shape)
-
-        ix,iy,iz = np.where(np.floor(dis) == i)
-
-        if ix.size > 0:
-            temp[ix,iy,iz] = temp[ix,iy,iz] + shape_mask[ix,iy,iz]*(1-b[ix,iy,iz])
-            flag_mask[ix,iy,iz]=1
-
-        ix,iy,iz = np.where(np.floor(dis) == i-1)
-        if ix.size > 0:
-            temp[ix,iy,iz] = temp[ix,iy,iz] + shape_mask[ix,iy,iz]*b[ix,iy,iz]
-            flag_mask[ix,iy,iz]=1
-
-#       x = np.unique(np.concatenate((x1, x2),axis=0)
-#       ix,iy,iz=np.unravel_index(x, Mask.shape)
-        ix,iy,iz = np.where(flag_mask > 0)
-        temp[ix,iy,iz] = 1.0 * temp[ix,iy,iz] / np.sum(temp[ix,iy,iz])
-        M_normal = M_normal + temp
-
-    Mask3D = M_normal * Mask;
+    Mask3D = M_normal * Mask
 
     cent = np.array([np.floor(s[0]/2), np.floor(s[1]/2)])
     delt = np.array([np.floor(s0[0]/2), np.floor(s0[1]/2)])
@@ -514,6 +483,74 @@ def generate_detector_mask(alfa0, theta0, leng0):
     Mask3D_cut[np.isnan(Mask3D_cut)] = 0
 
     return Mask3D_cut
+
+@jit
+def g_mask(M_shape, alfa, N):
+    M1 = np.zeros((M_shape[0], M_shape[1]))
+    M11 = M1.copy()
+    for I in range(M_shape[0]):
+        for J in range(M_shape[1]):
+            i = I+1
+            j = J+1
+            if (np.abs(N-i) >= j*np.tan(alfa)):
+                M1[I,J] = 0
+                M11[I,J] = M1[I,J]
+
+            elif (np.abs(N-i) < (j-1)*np.tan(alfa)
+                            and (np.abs(N-i)+1) > j*np.tan(alfa)):
+
+                desi_1 = (j-1)*np.tan(alfa) - np.floor((j-1)*np.tan(alfa))
+                desi_2 = j*np.tan(alfa) - np.floor(j*np.tan(alfa))
+                M11[I,J] = 0.5 * (desi_1 + desi_2)
+                M1[I,J] = M11[I,J] / np.cos(alfa);
+
+            elif (np.abs(N-i) < j*np.tan(alfa)
+                            and (np.abs(N-i)+1) > j*np.tan(alfa)
+                            and np.abs(N-i) > (j-1)*np.tan(alfa)):
+
+                desi_1 = j*np.tan(alfa) - np.floor(j*np.tan(alfa))
+                M11[I,J] = 0.5 * desi_1 * (desi_1/np.tan(alfa))
+                M1[I,J] = M11[I,J] / np.cos(alfa)
+
+            elif((np.abs(N-i)+1) < j*np.tan(alfa)
+                        and np.abs(N-i) < (j-1)*np.tan(alfa)
+                        and (np.abs(N-i)+1) > (j-1)*np.tan(alfa)):
+                desi_1 = np.ceil((j-1)*np.tan(alfa)) - (j-1)*np.tan(alfa)
+                M11[I,J] = 1 - 0.5 * desi_1 * (desi_1/np.tan(alfa))
+                M1[I,J] = M11[I,J] / np.cos(alfa)
+
+            else:
+                tmp = np.arctan(1.0*(N-i)/j)
+                M11[I,J] = 1
+                M1[I,J] = M11[I,J] / np.cos(tmp)
+    return M1  
+
+@njit
+def g_radial_mask(M_shape, radial_dis, shape_mask):
+
+    M_normal = np.zeros(M_shape)
+    dis = np.floor(radial_dis)
+    a = np.floor(radial_dis)
+    b = radial_dis - a
+    for i in prange(1, np.max(dis)+1):
+        #flag_mask = np.zeros(M_shape) # mark the position with radial distance == i
+        temp = np.zeros(M_shape)
+
+        s = dis.shape
+        for p in prange(s[0]):
+            for q in prange(s[1]):
+                for r in prange(s[2]):
+                    if dis[p, q, r] == i:
+                        temp[p, q, r] = temp[p, q, r] + shape_mask[p, q, r]*(1-b[p, q, r])
+                        #flag_mask[p, q, r]=1
+
+                    if dis[p, q, r] == i-1:
+                        temp[p, q, r] = temp[p, q, r] + shape_mask[p, q, r]*b[p, q, r]
+                        #flag_mask[p, q, r]=1
+        temp = 1.0 * temp / np.sum(temp)
+        M_normal = M_normal + temp
+    return M_normal
+
 
 
 
@@ -781,17 +818,14 @@ def write_attenuation(elem, data, current_angle, file_path='./Angle_prj'):
 
     """
 
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-    if not(os.path.isdir(file_path)):
-        os.mkdir(file_path)
-    os.chdir(file_path)
-    fname = 'atten_' + elem + '_prj_' + f'{current_angle:04d}' + '.tiff'
+    mk_directory(file_path)
+    if file_path[-1] == '/':
+        fn_root  = file_path
+    else:
+        fn_root  = file_path + '/'
+    fname = fn_root + 'atten_' + elem + '_prj_' + f'{current_angle:04d}' + '.tiff'
     io.imsave(fname, data.astype(np.float32))
-    '''
-    with h5py.File(fname, 'w') as hf:
-        hf.create_dataset('dataset_1', data=data)
-    '''
-    os.chdir(dir_path)
+
 
 
 def write_projection(mode, elem, data, current_angle, file_path='./Angle_prj'):
@@ -814,17 +848,19 @@ def write_projection(mode, elem, data, current_angle, file_path='./Angle_prj'):
     data: 2D or 3D, depending on write into seperated projection file(2D), or a single combined file(3D)
     """
 
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-    if not(os.path.isdir(file_path)):
-        os.mkdir(file_path)
-    os.chdir(file_path)
+    mk_directory(file_path)
+    if file_path[-1] == '/':
+        fn_root = file_path 
+    else:
+        fn_root = file_path + '/'
+
     if mode == 'single_file' or mode == 's':
-        fname = elem + '_ref_prj_single_file.h5'
+        fname = fn_root + elem + '_ref_prj_single_file.h5'
         with h5py.File(fname, 'w') as hf:
             hf.create_dataset('dataset_1', data=data)
             hf.create_dataset('angle_list', data=current_angle)
     elif mode == 'multi_file' or mode == 'm':
-        fname = elem + '_ref_prj_' + f'{current_angle:04d}' + '.tiff'
+        fname = fn_root + elem + '_ref_prj_' + f'{current_angle:04d}' + '.tiff'
         print(fname)
         io.imsave(fname, data.astype(np.float32))
         '''
@@ -832,7 +868,6 @@ def write_projection(mode, elem, data, current_angle, file_path='./Angle_prj'):
             hf.create_dataset('dataset_1', data=data)
         '''
     else: print ('unrecongnized "mode"')
-    os.chdir(dir_path)
 
 
 def pre_treat(*args):
@@ -1134,8 +1169,10 @@ def generate_H(elem_type, ref3D_tomo, sli, angle_list, bad_angle_index=[], file_
     2D array
     """
 
-    # fpre_att = file_path + '/atten_' + elem_type.lower() + '_prj_'
-    fpre_att = file_path + '/atten_' + elem_type + '_prj_'
+    if file_path[-1] == '/':
+        fpre_att = file_path + 'atten_' + elem_type + '_prj_'
+    else:
+        fpre_att = file_path + '/atten_' + elem_type + '_prj_'
 
     ref_tomo = ref3D_tomo.copy()
     theta = np.array(angle_list / 180 * np.pi)
@@ -1161,16 +1198,12 @@ def generate_H(elem_type, ref3D_tomo, sli, angle_list, bad_angle_index=[], file_
         if flag:
             f_att = fpre_att + f'{angle_list[i]:04d}.tiff'
             att = io.imread(f_att)[sli]
-            '''
-            f = h5py.File(f_att,'r')
-            att = np.array(f['dataset_1'][sli])
-            f.close()
-            '''
+
         else:
             att = np.ones([s[1],s[2]])
 
         T = np.array([[np.cos(-theta[i]), -np.sin(-theta[i])],[np.sin(-theta[i]), np.cos(-theta[i])]])
-        H = np.zeros([s[2], s[2]*s[2]])
+        H = np.zeros([s[2], s[1]*s[2]])
         for col in range(s[2]):
             for row in range(s[1]):
                 p = row
@@ -1247,15 +1280,6 @@ def generate_I(elem_type, ref3D_tomo, sli, angle_list, bad_angle_index=[], file_
             continue
         k = k + 1
         f_ref = fpre_prj + f'{angle_list[i]:04d}.tiff'
-        '''
-        try:
-            f = h5py.File(f_ref, 'r')
-        except:
-            print(f'file "{f_ref}" does not exist ...')
-            return 0
-        prj = np.array(f['dataset_1'][sli])
-        f.close()
-        '''
         prj = io.imread(f_ref)[sli]
         I_tot[k*s[2] : (k+1)*s[2]] = prj
 
@@ -1311,8 +1335,9 @@ def load_param(fn):
             print(f'pix size = {pix:3.1e} cm')
 
         elif words[0].lower().find('density')>-1:
-            rho = float(words[1].strip(' '))
-            print(f'rho = {rho} g/cm3')
+            #rho = float(words[1].strip(' '))
+            rho = [float(x.strip(' ')) for x in words[1].split(',')]
+            print(f'mass density = {rho} g/cm3')
 
         elif words[0].lower().find('emission energy')>-1:
             em_eng = [float(x.strip(' ')) for x in words[1].split(',')]
@@ -1329,14 +1354,16 @@ def load_param(fn):
     M = {} # mole mass
     em_E = {} # emission energy (keV)
     em_cs = {} # emission cross section (cm2/g)
+    rho_elem = {} # mass density for compond containing each element (g/cm3)
     for i in range(nelem):
         M[elem_type[i]] = mass[i]
         em_E[elem_type[i]] = em_eng[i]
         em_cs[elem_type[i]] = cs_em[i]
+        rho_elem[elem_type[i]] = rho[i]
     res = {}
     res['XEng'] = XEng
     res['nelem'] = nelem
-    res['rho'] = rho
+    res['rho'] = rho_elem
     res['pix'] = float(f'{pix:3.1e}')
     res['M'] = M
     res['em_E'] = em_E
@@ -1470,7 +1497,7 @@ def cal_frac(*args):
     return res
 
 
-@jit
+
 def retrieve_data_mask(data3d, row, col, sli, mask):
     """
     Retrieve data defined by mask, orignated at position(sli/2, row, col/2),
@@ -1552,7 +1579,7 @@ def cal_atten_3D0(img4D, cs, param, display_flag=True):
         cs_mix[ele] *= (img_sum/pix_max)
     for i in range(n_type):
         ele = elem_type[i]
-        mu[ele] = cs_mix[ele] * rho
+        mu[ele] = cs_mix[ele] * rho[ele]
     for i in range(n_type):
         ele = elem_type[i]
         print(f'calculating attenuation for {ele}')
@@ -1567,10 +1594,12 @@ def cal_atten_3D0(img4D, cs, param, display_flag=True):
     ### including atten_incident x-ray ###
     #print('calculating x-ray attenuation')
     cs_mix['x'] = 0
+    mu['x'] = 0
     for i in range(n_type):
         ele = elem_type[i]
         cs_mix['x'] += frac[i] * cs[f'{ele}-x'] * img_sum/pix_max
-    mu['x'] = cs_mix['x'] * rho
+        mu['x'] +=  cs_mix['x'] * rho[ele]
+    #mu['x'] = cs_mix['x'] * rho
     x_ray_atten = np.ones(s)
     for j in range(1, s[0]):
         x_ray_atten[j] = x_ray_atten[j-1] * np.exp(-mu['x'][j] * pix)
@@ -1606,7 +1635,7 @@ def cal_atten_3D_row_by_row(img4D, cs, param, display_flag=True, num_cpu=8):
         cs_mix[ele] *= (img_sum/pix_max)
     for i in range(n_type):
         ele = elem_type[i]
-        mu[ele] = cs_mix[ele] * rho
+        mu[ele] = cs_mix[ele] * rho[ele]
     for i in range(n_type):
         ele = elem_type[i]
         print(f'calculating attenuation for {ele}')
@@ -1623,10 +1652,12 @@ def cal_atten_3D_row_by_row(img4D, cs, param, display_flag=True, num_cpu=8):
     ### including atten_incident x-ray ###
     #print('calculating x-ray attenuation')
     cs_mix['x'] = 0
+    mu['x'] = 0
     for i in range(n_type):
         ele = elem_type[i]
         cs_mix['x'] += frac[i] * cs[f'{ele}-x'] * img_sum/pix_max
-    mu['x'] = cs_mix['x'] * rho
+        mu['x'] += cs_mix['x'] * rho[ele]
+    #mu['x'] = cs_mix['x'] * rho
     x_ray_atten = np.ones(s)
     for j in range(1, s[0]):
         x_ray_atten[j] = x_ray_atten[j-1] * np.exp(-mu['x'][j] * pix)
@@ -1664,7 +1695,7 @@ def cal_atten_3D(img4D, cs, param, Mask3D, display_flag=True, num_cpu=8):
         cs_mix[ele] *= (img_sum/pix_max)
     for i in range(n_type):
         ele = elem_type[i]
-        mu[ele] = cs_mix[ele] * rho
+        mu[ele] = cs_mix[ele] * rho[ele]
     for i in range(n_type):
         ele = elem_type[i]
         print(f'calculating attenuation for {ele}')
@@ -1678,10 +1709,12 @@ def cal_atten_3D(img4D, cs, param, Mask3D, display_flag=True, num_cpu=8):
     ### including atten_incident x-ray ###
     #print('calculating x-ray attenuation')
     cs_mix['x'] = 0
+    mu['x'] = 0
     for i in range(n_type):
         ele = elem_type[i]
         cs_mix['x'] += frac[i] * cs[f'{ele}-x'] * img_sum/pix_max
-    mu['x'] = cs_mix['x'] * rho
+        mu['x'] += cs_mix['x'] * rho[ele]
+    #mu['x'] = cs_mix['x'] * rho
     x_ray_atten = np.ones(s)
     for j in range(1, s[0]):
         x_ray_atten[j] = x_ray_atten[j-1] * np.exp(-mu['x'][j] * pix)
@@ -1806,5 +1839,8 @@ def bin_ndarray(ndarray, new_shape=None, operation='mean'):
     return ndarray
 
 
+def mk_directory(dir_path):
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)
 
     #
