@@ -66,19 +66,19 @@ def main():
     
 
     #### step 1: load parameters
-    Zr = io.imread(fn + 'Zr3D_00.tiff')[20:80]
-    Hf = io.imread(fn + 'Hf3D_00.tiff')[20:80]
+    Zr = io.imread(fn + 'Zr3D_00.tiff')
+    Hf = io.imread(fn + 'Hf3D_00.tiff')
     img4D = FL.pre_treat(Zr, Hf)
     param = FL.load_param(fn + 'param_Zr_Hf.txt')
     cs = FL.get_atten_coef(param['elem_type'], param['XEng'], param['em_E'])
     elem_type = param['elem_type']
-    angle_list = np.arange(0, 180, 3)
-    num_cpu = 4
+    angle_list = np.arange(0, 180, 6)
+    num_cpu = 8
 
 
     #### step 2 (optional): generate perfect tomo reconstruction for reference
     fn_ground_truth = fn + f'ground_truth/'
-    mk_directory(fn_ground_truth)
+    FL.mk_directory(fn_ground_truth)
 
     Zr_prj_perfect = FL.re_projection(Zr, angle_list)
     Zr_rec_perfect = tomopy.recon(Zr_prj_perfect, angle_list/180*np.pi,
@@ -102,10 +102,12 @@ def main():
 
     # will save attenuation and projection into file
     # Be patient, this will take some time
-    fsave = fn+'Angle_prj_ground_truth/'
-    mk_directory(fsave)
 
-    prj_atten = simu_atten_prj(angle_list, img4D, param, cs, mask3D, position_det='r', file_path=fsave, num_cpu=num_cpu)
+    fsave = fn+'Angle_prj_ground_truth/'
+    FL.mk_directory(fsave)
+
+    prj_atten = simu_atten_prj(angle_list, img4D, param, cs, mask3D, position_det='r', 
+                                file_path=fsave, num_cpu=num_cpu)
 
     # save projection image
     for i in range(len(elem_type)):
@@ -133,7 +135,7 @@ def main():
 #### 1st iteration
     # calculate the attenuation based on the current reconstruction
     cal_and_save_atten_prj(param, cs, simu_rec, angle_list, simu_prj, mask3D, fsave=fn+'Angle_prj1', align_flag=0, num_cpu=num_cpu)
-    sli = np.arange(100)
+    sli = np.arange(Zr.shape[0])
     m = (Zr>0).astype(np.int16)
     ref_tomo = np.ones(Zr.shape) * m
 
@@ -152,7 +154,7 @@ def main():
     Hf_cor1 = io.imread(fn+'Hf_cor_01.tiff')
     simu_rec1 = FL.pre_treat(Zr_cor1, Hf_cor1)
     cal_and_save_atten_prj(param, cs, simu_rec1, angle_list, simu_prj, mask3D, fsave=fn+'Angle_prj2', align_flag=0, num_cpu=num_cpu)
-    sli = np.arange(100)
+    sli = np.arange(Zr.shape[0])
     Zr_cor2 = simu_absorption_correction_mpi(sli, elem_type[0], ref_tomo, angle_list=angle_list, file_path=fn+'Angle_prj2', iter_num=30)
     io.imsave(fn+'Zr_cor_02.tiff', Zr_cor2.astype(np.float32))
     Hf_cor2 = simu_absorption_correction_mpi(sli, elem_type[1], ref_tomo, angle_list=angle_list, file_path=fn+'Angle_prj2', iter_num=30)
