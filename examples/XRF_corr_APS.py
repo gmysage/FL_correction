@@ -1,10 +1,6 @@
-import pyxas
-import xraylib
-import glob
-from scipy.signal import medfilt as mf
+import FL_correction as FL
 from skimage import io
 from tqdm import trange
-from skimage.transform import rescale
 
 '''
 discard Si
