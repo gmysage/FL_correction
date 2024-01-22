@@ -1,0 +1,14 @@
+X-ray Energy:	  13.577
+Pixel size(nm):    500
+Number of elements:	   6
+Element type: Si, Ti, Cr, Fe, Ni, Ba
+XRF Shell: K, K, K, K, K, L
+Compound Density(g/cm3): 2.65, 4.506, 7.19, 7.874, 8.90, 3.59
+Emission energy: 1.739, 4.509, 5.411, 6.399, 7.472, 4.463
+
+# remove Si
+#Number of elements:	   5
+#Element type: Ti, Cr, Fe, Ni, Ba
+#XRF Shell: K, K, K, K, L
+#Compound Density(g/cm3): 4.506, 7.19, 7.874, 8.90, 3.59
+#Emission energy: 4.509, 5.411, 6.399, 7.472, 4.463
