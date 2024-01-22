@@ -19,6 +19,6 @@ Ge, M., Huang, X., Yan, H. et al. Three-dimensional imaging of grain boundaries 
 
 
 ## Test the code
-Check the "test_new.py" for detail.
+Illustrative examples will be provided soon.
 
 
