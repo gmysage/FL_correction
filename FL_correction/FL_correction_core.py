@@ -675,7 +675,7 @@ def get_atten_coef(elem_type, XEng, em_E):
     return cs
 
 
-def cal_atten_with_direction(img4D, cs, param, position_det='r', enable_scale=False, num_cpu=8):
+def cal_atten_with_direction(img4D, cs, param, position_det='r', enable_scale=False, detector_offset_angle=0, num_cpu=8):
     """
     Calculate the attenuation of incident x-ray, fluorescent with given
     experiment configuration. Assume x-ray is passing from front to the back
@@ -716,7 +716,7 @@ def cal_atten_with_direction(img4D, cs, param, position_det='r', enable_scale=Fa
     # change detector position from "right (or left) to "front"    
     if position_det == 'r': # if detector locates on the right side:
         img4D_r = fast_rot90_4D(img4D, ax=0, mode='clock')
-    if position_det == 'l': # if detector locates on the right side:
+    if position_det == 'l': # if detector locates on the left side:
         img4D_r = fast_rot90_4D(img4D, ax=0, mode='c-clock')
         img4D_r = img4D_r[:, :, :, ::-1]
 
@@ -730,7 +730,8 @@ def cal_atten_with_direction(img4D, cs, param, position_det='r', enable_scale=Fa
         img4D_b = img4D_r.copy()
     '''
 
-    atten, atten_fl, atten_xray = cal_atten_3D(img4D_r, cs, param, enable_scale=enable_scale, num_cpu=num_cpu)
+    atten, atten_fl, atten_xray = cal_atten_3D(img4D_r, cs, param, enable_scale=enable_scale,
+                                               detector_offset_angle=detector_offset_angle, num_cpu=num_cpu)
 
     atten3D = {}
     # reverse the rotation 
@@ -1256,8 +1257,15 @@ def retrieve_data_mask(data3d, row, col, sli, mask):
     return data
 
 
-def cal_atten_3D(img4D, cs, param, enable_scale=False, num_cpu=8):
+def cal_atten_3D(img4D, cs, param, enable_scale=False, detector_offset_angle=0, num_cpu=8):
 
+    '''
+    special note:
+    detector_offset_angle: angle of detector away from 90 degrees to incident xray
+    e.g. 0: detector is at 90 deg to incident x-ray
+        15: detortor is at 75 deg to incident x-ray, in this case, need to c-clock rotate data to calculate xrf-atten
+
+    '''
     elem_type = cs['elem_type']
     rho = param['rho']
     pix = param['pix']
@@ -1308,7 +1316,12 @@ def cal_atten_3D(img4D, cs, param, enable_scale=False, num_cpu=8):
     '''
 
     # new method (faster)
-    res = xrf_atten(mu, elem_type, num_cpu)
+    # additional rotation of detector
+    # added on 2024_10_20
+    mu_xrf = rot3D_dict_img(mu, detector_offset_angle)
+    res = xrf_atten(mu_xrf, elem_type, num_cpu)
+    res = rot3D(res, -detector_offset_angle)
+
     atten_xrf = np.exp(-res * pix) # xrf attenunation
 
     atten_overall = atten_xrf * x_ray_atten # (xrf + incident xray) attenuation
@@ -1452,7 +1465,8 @@ def smooth_filter(img, filter_size=3):
     return img_s
 
 
-def cal_and_save_atten_prj(param, cs, recon4D, angle_list, ref_prj, fsave='./Angle_prj', align_flag=0, enable_scale=False, num_cpu=8):
+def cal_and_save_atten_prj(param, cs, recon4D, angle_list, ref_prj, fsave='./Angle_prj',
+                           align_flag=0, enable_scale=False, detector_offset_angle=0, num_cpu=8):
     '''
     Function used to calcuate the attenuation coefficents of each elements and all 3D voxels
     results will be saved into the "fsave" folder
@@ -1475,7 +1489,8 @@ def cal_and_save_atten_prj(param, cs, recon4D, angle_list, ref_prj, fsave='./Ang
     ref_prj_sum = np.sum(ref_prj, axis=0)
     for ang_id in range(n_angle):
         print(f'\ncalculate and save attenuation and projection at angle {angle_list[ang_id]}: {ang_id+1}/{n_angle}')
-        res = cal_atten_prj_at_angle(angle_list[ang_id], recon4D, param, cs, position_det='r', enable_scale=enable_scale, num_cpu=num_cpu)
+        res = cal_atten_prj_at_angle(angle_list[ang_id], recon4D, param, cs, position_det='r',
+                                     enable_scale=enable_scale, detector_offset_angle=detector_offset_angle, num_cpu=num_cpu)
         if align_flag:
             _, r, c = align_img(res['prj_sum'], ref_prj_sum[ang_id])     
             print(f'shift projection image at angle={angle_list[ang_id]}: {r}, {c}')   
@@ -1492,7 +1507,8 @@ def cal_and_save_atten_prj(param, cs, recon4D, angle_list, ref_prj, fsave='./Ang
             write_attenuation(elem, res['atten'][elem], angle_list[ang_id], ang_id, fsave)
 
 
-def cal_atten_prj_at_angle(angle, img4D, param, cs, position_det='r', enable_scale=False, num_cpu=8):
+def cal_atten_prj_at_angle(angle, img4D, param, cs, position_det='r', enable_scale=False,
+                           detector_offset_angle=0, num_cpu=8):
     '''
     calculate the attenuation and projection at single angle
     '''
@@ -1502,7 +1518,8 @@ def cal_atten_prj_at_angle(angle, img4D, param, cs, position_det='r', enable_sca
     img4D_r = rot3D(img4D, angle)
     prj = {}
     prj_sum = 0
-    atten = cal_atten_with_direction(img4D_r, cs, param, position_det='r', enable_scale=enable_scale, num_cpu=num_cpu)
+    atten = cal_atten_with_direction(img4D_r, cs, param, position_det='r', enable_scale=enable_scale,
+                                     detector_offset_angle=detector_offset_angle, num_cpu=num_cpu)
     for j in range(n_type):
         ele = elem_type[j]
         prj[ele] = np.sum(img4D_r[j]*atten[ele], axis=1)

@@ -149,6 +149,16 @@ def fast_rot90_4D(img4D, ax=0, mode='c-clock'):
     return img4D_r
 
 
+def rot3D_dict_img(img_dict, rot_angle):
+    dict_rot = img_dict.copy()
+    keys = img_dict.keys()
+    for k in keys:
+        img = img_dict[k]
+        img_r = rot3D(img, rot_angle)
+        dict_rot[k] = img_r.copy()
+    return dict_rot
+
+
 def rot3D(img_raw, rot_angle, order=3):
 
     """
@@ -171,6 +181,8 @@ def rot3D(img_raw, rot_angle, order=3):
 
     img = np.array(img_raw)
     img = rm_nan(img)
+    if rot_angle == 0:
+        return img
     s = img.shape
     if np.mod(rot_angle, 90) == 0:
         order = 0

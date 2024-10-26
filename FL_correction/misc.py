@@ -39,7 +39,7 @@ def remove_elem_in_dict(dict, elem_tom_remove):
 def recon_astra_sub(proj, theta, rot_cen=None, method='FBP_CUDA', num_iter=20):
     import tomopy
     if rot_cen is None:
-        rot_cen = proj.shape[-1] / 2
+        rot_cen = (proj.shape[-1]-1) / 2
     if method=='EM_CUDA':
         extra_options = {}
     else:
