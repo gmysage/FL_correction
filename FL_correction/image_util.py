@@ -339,24 +339,30 @@ def adaptive_threshold(img, fill_hole=False, dilation=0):
     if len(s) == 3:
         for i in range(s[0]):
             image = img[i]
-            thresholds = threshold_multiotsu(image)
-            regions = np.digitize(image, bins=thresholds)
-            mask[i][regions<1] = 0
-            if fill_hole:
-                mask[i] = ndimage.binary_fill_holes(mask[i], np.ones((5, 5)))
-            if dilation > 0:
-                struct = ndimage.generate_binary_structure(2, 1)
-                mask[i] = ndimage.binary_dilation(mask[i], structure=struct, iterations=dilation)    
+            try:
+                thresholds = threshold_multiotsu(image)
+                regions = np.digitize(image, bins=thresholds)
+                mask[i][regions<1] = 0
+                if fill_hole:
+                    mask[i] = ndimage.binary_fill_holes(mask[i], np.ones((5, 5)))
+                if dilation > 0:
+                    struct = ndimage.generate_binary_structure(2, 1)
+                    mask[i] = ndimage.binary_dilation(mask[i], structure=struct, iterations=dilation)
+            except:
+                mask[i] = 0
     elif len(s) == 2:
         image = img
-        thresholds = threshold_multiotsu(image)
-        regions = np.digitize(image, bins=thresholds)
-        mask[regions<1] = 0
-        if fill_hole:
-             mask = ndimage.binary_fill_holes(mask, np.ones((5, 5)))
-        if dilation > 0:
-            struct = ndimage.generate_binary_structure(2, 1)
-            mask = ndimage.binary_dilation(mask, structure=struct, iterations=dilation)  
+        try:
+            thresholds = threshold_multiotsu(image)
+            regions = np.digitize(image, bins=thresholds)
+            mask[regions<1] = 0
+            if fill_hole:
+                 mask = ndimage.binary_fill_holes(mask, np.ones((5, 5)))
+            if dilation > 0:
+                struct = ndimage.generate_binary_structure(2, 1)
+                mask = ndimage.binary_dilation(mask, structure=struct, iterations=dilation)
+        except:
+            mask[:] = 0
     else:
         print('image shape not recognized')
     return mask
