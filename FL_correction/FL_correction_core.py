@@ -109,11 +109,11 @@ def row_sum(p):
     p_sum = m @ p
     return p_sum
 
-def prep_detector_mask3D(alfa=15, theta=60, length_maximum=200, fn_save='mask3D.h5'):
+def prep_detector_mask3D(alfa=15, beta=60, length_maximum=200, fn_save='mask3D.h5'):
     print('Generating detector 3D mask ...')
     mask = {}
     for i in trange(length_maximum, 6, -1):
-        mask[f'{i}'] = generate_detector_mask(alfa, theta, i)
+        mask[f'{i}'] = generate_detector_mask(alfa, beta, i)
     print(f'Saving {fn_save} ...')
     with h5py.File(fn_save, 'w') as hf:
         for i in range(7, length_maximum+1):
