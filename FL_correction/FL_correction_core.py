@@ -1181,13 +1181,17 @@ def cal_frac(*args):
     img_sum =  img_sum *img_mask
 
     sum_sort = np.sort(img_sum[img_sum>(pix_max)*0.1])
-    pix_max_update = sum_sort[int(0.99*len(sum_sort))]
+    pix_max_update = sum_sort[int(0.9*len(sum_sort))]
     pix_median = np.median(sum_sort)
 
     for i in range(n):
         tmp = rm_abnormal(img[i] / img_sum)
-        tmp[tmp>1] = 1
-        frac[i] = tmp
+        tmp_sort = np.sort(tmp[tmp>0])
+        l = len(tmp_sort)
+        tmp_sort = tmp_sort[int(l*0.05):int(l*0.95)]
+        tmp[tmp >= tmp_sort[-1]] = tmp_sort[-1]
+        tmp[tmp <= tmp_sort[0]] = tmp_sort[0]
+        frac[i] = tmp * img_mask
     res = {}
     res['img_sum'] = img_sum
     res['frac'] = frac
@@ -1277,15 +1281,13 @@ def cal_atten_3D(img4D, cs, param, enable_scale=False, detector_offset_angle=0, 
     pix_median = res['pix_median']
     frac = res['frac']
     s = img_sum.shape # detector is in the front of image
-    cs_mix = {} # effective cross section at each fluorescent line
     mu = {}     # atten coef: cm2/g * g/cm3 -> cm-1
-    mu3D = {}   # atten coef of 3D
     atten_single_pix = {} # single-pix atten coef of each element
-    atten_xray = {}
     atten = {}
 
     if enable_scale:
-        scale_ratio = img_sum / pix_median
+        #scale_ratio = img_sum / pix_median
+        scale_ratio = img_sum / pix_max
         scale_ratio[scale_ratio>1] = 1
     else:
         scale_ratio = 1
