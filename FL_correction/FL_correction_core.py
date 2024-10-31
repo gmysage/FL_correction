@@ -1188,9 +1188,10 @@ def cal_frac(*args):
         tmp = rm_abnormal(img[i] / img_sum)
         tmp_sort = np.sort(tmp[tmp>0])
         l = len(tmp_sort)
-        tmp_sort = tmp_sort[int(l*0.05):int(l*0.95)]
-        tmp[tmp >= tmp_sort[-1]] = tmp_sort[-1]
-        tmp[tmp <= tmp_sort[0]] = tmp_sort[0]
+        if l > 100:
+            tmp_sort = tmp_sort[int(l*0.1):int(l*0.9)]
+            tmp[tmp >= tmp_sort[-1]] = tmp_sort[-1]
+            tmp[tmp <= tmp_sort[0]] = tmp_sort[0]
         frac[i] = tmp * img_mask
     res = {}
     res['img_sum'] = img_sum
