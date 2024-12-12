@@ -658,25 +658,30 @@ def pre_treat(*args):
         data = rm_nan(data)
         return np.array(data)
 
-def get_atten_coef(elem_type, XEng_list, em_E):
+def get_atten_coef(elem_type, elem_compound, XEng_list, em_E):
     '''
     elem_type = ['Zr', 'La', 'Hf']
-    XEng = 12
+    elem_compound = ['ZrO2', 'La2O3', 'HfO2']
+    XEng = [12]
     em_E = [4.6, ]
     '''
     et = elem_type
+    ec = elem_compound
     cs = {}
     n = len(elem_type)
     cs['elem_type'] = elem_type
+    cs['elem_compound'] = elem_compound
     for i in range(n):
         # atten at incident x-ray
-        cs[f'{et[i]}-x'] = np.zeros(len(XEng_list))
+        cs[f'{ec[i]}-x'] = np.zeros(len(XEng_list))
         for k in range(len(XEng_list)):
             XEng = XEng_list[k]
-            cs[f'{et[i]}-x'][k] = xraylib.CS_Total(xraylib.SymbolToAtomicNumber(et[i]), XEng)
+            # cs[f'{et[i]}-x'][k] = xraylib.CS_Total(xraylib.SymbolToAtomicNumber(et[i]), XEng)
+            cs[f'{ec[i]}-x'][k]  = xraylib.CS_Total_CP(ec[i], XEng)
         for j in range(n):
             # atten at each emission line
-            cs[f'{et[i]}-{et[j]}'] = xraylib.CS_Total(xraylib.SymbolToAtomicNumber(et[i]), em_E[et[j]])
+            # cs[f'{et[i]}-{et[j]}'] = xraylib.CS_Total(xraylib.SymbolToAtomicNumber(et[i]), em_E[et[j]])
+            cs[f'{ec[i]}-{et[j]}'] = xraylib.CS_Total_CP(ec[i], em_E[et[j]])
     return cs
 
 
@@ -992,24 +997,33 @@ def load_param(fn):
         elif words[0].lower().find('element type')>-1:
             elem_type = [x.strip(' ') for x in words[1].split(',')]
             print(f'element type: {elem_type}')
-        
+
+        elif words[0].lower().find('element compound') > -1:
+            elem_comp = [x.strip(' ') for x in words[1].split(',')]
+            print(f'element compound: {elem_comp}')
+
         elif words[0].lower().find('shell')>-1:
             xrf_shell = [x.strip(' ') for x in words[1].split(',')]
             print(f'XRF_shell: {xrf_shell}')
 
-    M = {} # mole mass
+    M = {} # mole mass of compound
     em_E = {} # emission energy (keV)
     em_cs = {} # emission cross section (cm2/g)
     rho_elem = {} # mass density for compond containing each element (g/cm3)
     for i in range(nelem):
         ele = elem_type[i]
+        ele_comp = elem_comp[i]
         atom_idx = xraylib.SymbolToAtomicNumber(ele)
-        M[ele] = xraylib.AtomicWeight(atom_idx)
+
+
         em_E[ele] = em_eng[i]
-        rho_elem[ele] = rho[i]        
+        rho_elem[ele_comp] = rho[i]
+        # M[ele] = xraylib.AtomicWeight(atom_idx)
+        M[ele_comp] = xraylib.CompoundParser(ele_comp)['molarMass']
+
         if xrf_shell[i] == 'K':
             em_cs[ele] = []
-            for XEng in XEng_list:
+            for i, XEng in enumerate(XEng_list):
                 try:
                     current_cs = xraylib.CS_FluorLine(atom_idx, xraylib.KA_LINE, XEng)
                     current_cs += xraylib.CS_FluorLine(atom_idx, xraylib.KB_LINE, XEng)
@@ -1017,8 +1031,12 @@ def load_param(fn):
                     # in case The excitation energy too low to excite the shell,
                     # set to a large number, when normalize the XRF with emission cross-section, it will effectively
                     # reduce the xrf counts
-                    current_cs = 100
+                    current_cs = -100
                 em_cs[ele].append(current_cs)
+            em_cs[ele] = np.array(em_cs[ele])
+            valid_em_cs = em_cs[ele][em_cs[ele]>0]
+            idx = em_cs[ele] < 0
+            em_cs[ele][idx] = np.max(valid_em_cs)
         elif xrf_shell[i] == 'L':
             em_cs[ele] = []
             for XEng in XEng_list:
@@ -1037,6 +1055,7 @@ def load_param(fn):
     res['em_E'] = em_E
     res['em_cs'] = em_cs
     res['elem_type'] = elem_type
+    res['elem_compound'] = elem_comp
     return res
 
 
@@ -1296,6 +1315,7 @@ def cal_atten_3D(img4D, cs, param, enable_scale=False, detector_offset_angle=0, 
 
     '''
     elem_type = cs['elem_type']
+    elem_compound = cs['elem_compound']
     rho = param['rho']
     pix = param['pix']
     #img_thick = param['img_thick']
@@ -1319,8 +1339,16 @@ def cal_atten_3D(img4D, cs, param, enable_scale=False, detector_offset_angle=0, 
 
     for i, xrf_eng in enumerate(elem_type + ['x']):
         mu[xrf_eng] = 0
+        '''
         for j, atten_ele in enumerate(elem_type):
             mu[xrf_eng] += frac[j] * cs[f'{atten_ele}-{xrf_eng}'] * rho[atten_ele] * scale_ratio
+        '''
+        for j, elem_comp in enumerate(elem_compound):
+            # e.g
+            # mu['Ni'] = mu[7.4keV] = f[LiNiO2] * cs[LiNiO2-7.4keV] * rho[LiNiO2] +
+            #                       + f[LiCoO2] * cs[LiCoO2-7.4keV] * rho[LiCoO2] +
+            #                       + f[LiMnO2] * cs[LiMnO2-7.4keV] * rho[LiMnO2] +
+            mu[xrf_eng] += frac[j] * cs[f'{elem_comp}-{xrf_eng}'] * rho[elem_comp] * scale_ratio
 
     #step 1 attenuation of incident X-ray
     x_ray_atten = np.ones(s)
@@ -1511,11 +1539,11 @@ def cal_and_save_atten_prj(param, cs, recon4D, angle_list, ref_prj, fsave='./Ang
     s = recon4D.shape
 
     elem_type = param['elem_type']
-
+    elem_comp = param['elem_compound']
     # updated on 12/11/2024
     # in case incident x-ray energy changes with rotation angle
     cs_angle_energy = cs.copy()
-    cs_angle_energy_type = type(cs_angle_energy[f'{elem_type[0]}-x'])
+    cs_angle_energy_type = type(cs_angle_energy[f'{elem_comp[0]}-x'])
 
 
     Nelem = len(elem_type)
@@ -1526,8 +1554,8 @@ def cal_and_save_atten_prj(param, cs, recon4D, angle_list, ref_prj, fsave='./Ang
         print(f'\ncalculate and save attenuation and projection at angle {angle_list[ang_id]}: {ang_id+1}/{n_angle}')
 
         if cs_angle_energy_type is np.ndarray or list:
-            for elem in elem_type:
-                cs_angle_energy[f'{elem}-x'] = cs[f'{elem}-x'][ang_id]
+            for ele_comp in elem_comp:
+                cs_angle_energy[f'{ele_comp}-x'] = cs[f'{ele_comp}-x'][ang_id]
         '''
         res = cal_atten_prj_at_angle(angle_list[ang_id], recon4D, param, cs, position_det='r',
                                      enable_scale=enable_scale, detector_offset_angle=detector_offset_angle, num_cpu=num_cpu)
