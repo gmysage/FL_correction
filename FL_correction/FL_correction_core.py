@@ -1,6 +1,8 @@
 """
 This module is functions specific to correct the self-absorption problem in 3D fluorescent tomography
 """
+import os.path
+
 import numpy as np
 import h5py
 import itertools
@@ -656,7 +658,7 @@ def pre_treat(*args):
         data = rm_nan(data)
         return np.array(data)
 
-def get_atten_coef(elem_type, XEng, em_E):
+def get_atten_coef(elem_type, XEng_list, em_E):
     '''
     elem_type = ['Zr', 'La', 'Hf']
     XEng = 12
@@ -668,7 +670,10 @@ def get_atten_coef(elem_type, XEng, em_E):
     cs['elem_type'] = elem_type
     for i in range(n):
         # atten at incident x-ray
-        cs[f'{et[i]}-x'] = xraylib.CS_Total(xraylib.SymbolToAtomicNumber(et[i]), XEng)
+        cs[f'{et[i]}-x'] = np.zeros(len(XEng_list))
+        for k in range(len(XEng_list)):
+            XEng = XEng_list[k]
+            cs[f'{et[i]}-x'][k] = xraylib.CS_Total(xraylib.SymbolToAtomicNumber(et[i]), XEng)
         for j in range(n):
             # atten at each emission line
             cs[f'{et[i]}-{et[j]}'] = xraylib.CS_Total(xraylib.SymbolToAtomicNumber(et[i]), em_E[et[j]])
@@ -681,7 +686,7 @@ def cal_atten_with_direction(img4D, cs, param, position_det='r', enable_scale=Fa
     experiment configuration. Assume x-ray is passing from front to the back
     of the 3D object
 
-    Rotate the 3D voluem to change configuration to:
+    Rotate the 3D volume to change configuration to:
     x-ray: change to pass from left->rigth of the 3D volume
     detector: sit in front of the 3D volume, which means it sit at bottom of each 2D slice of 3D 
 
@@ -955,8 +960,12 @@ def load_param(fn):
         words = lines[i].split('#')[0]
         words = words.split(':')
         if words[0].lower().find('x-ray energy')>-1:
-            XEng = float(words[1].strip(' '))
-            print(f'XEng = {XEng} keV')
+            tmp = words[1].strip(' ')
+            if os.path.exists(tmp):
+                XEng_list = np.loadtxt(tmp)
+            else:
+                XEng_list = np.array([float(words[1].strip(' '))])
+            print(f'XEng = {XEng_list} keV')
 
         elif words[0].lower().find('number')>-1:
             nelem = int(words[1].strip(' ' ))
@@ -998,14 +1007,29 @@ def load_param(fn):
         M[ele] = xraylib.AtomicWeight(atom_idx)
         em_E[ele] = em_eng[i]
         rho_elem[ele] = rho[i]        
-        if xrf_shell[i] == 'K':            
-            em_cs[ele] = xraylib.CS_FluorLine(atom_idx, xraylib.KA_LINE, XEng)
-            em_cs[ele] += xraylib.CS_FluorLine(atom_idx, xraylib.KB_LINE, XEng)
+        if xrf_shell[i] == 'K':
+            em_cs[ele] = []
+            for XEng in XEng_list:
+                try:
+                    current_cs = xraylib.CS_FluorLine(atom_idx, xraylib.KA_LINE, XEng)
+                    current_cs += xraylib.CS_FluorLine(atom_idx, xraylib.KB_LINE, XEng)
+                except:
+                    # in case The excitation energy too low to excite the shell,
+                    # set to a large number, when normalize the XRF with emission cross-section, it will effectively
+                    # reduce the xrf counts
+                    current_cs = 100
+                em_cs[ele].append(current_cs)
         elif xrf_shell[i] == 'L':
-            em_cs[ele] = xraylib.CS_FluorLine(atom_idx, xraylib.LA_LINE, XEng)
-            em_cs[ele] += xraylib.CS_FluorLine(atom_idx, xraylib.LB_LINE, XEng)
+            em_cs[ele] = []
+            for XEng in XEng_list:
+                try:
+                    current_cs = xraylib.CS_FluorLine(atom_idx, xraylib.LA_LINE, XEng)
+                    current_cs += xraylib.CS_FluorLine(atom_idx, xraylib.LB_LINE, XEng)
+                except: # in case The excitation energy too low to excite the shell
+                    current_cs = 1e-2
+                em_cs[ele].append(current_cs)
     res = {}
-    res['XEng'] = XEng
+    res['XEng'] = XEng_list
     res['nelem'] = nelem
     res['rho'] = rho_elem
     res['pix'] = float(f'{pix:3.1e}')
@@ -1485,15 +1509,33 @@ def cal_and_save_atten_prj(param, cs, recon4D, angle_list, ref_prj, fsave='./Ang
     '''
 
     s = recon4D.shape
+
     elem_type = param['elem_type']
+
+    # updated on 12/11/2024
+    # in case incident x-ray energy changes with rotation angle
+    cs_angle_energy = cs.copy()
+    cs_angle_energy_type = type(cs_angle_energy[f'{elem_type[0]}-x'])
+
+
     Nelem = len(elem_type)
     n_angle = len(angle_list)
     prj = np.zeros([Nelem, n_angle, s[1], s[3]])
     ref_prj_sum = np.sum(ref_prj, axis=0)
     for ang_id in range(n_angle):
         print(f'\ncalculate and save attenuation and projection at angle {angle_list[ang_id]}: {ang_id+1}/{n_angle}')
+
+        if cs_angle_energy_type is np.ndarray or list:
+            for elem in elem_type:
+                cs_angle_energy[f'{elem}-x'] = cs[f'{elem}-x'][ang_id]
+        '''
         res = cal_atten_prj_at_angle(angle_list[ang_id], recon4D, param, cs, position_det='r',
                                      enable_scale=enable_scale, detector_offset_angle=detector_offset_angle, num_cpu=num_cpu)
+        '''
+        res = cal_atten_prj_at_angle(angle_list[ang_id], recon4D, param, cs_angle_energy, position_det='r',
+                                     enable_scale=enable_scale, detector_offset_angle=detector_offset_angle,
+                                     num_cpu=num_cpu)
+
         if align_flag:
             _, r, c = align_img(res['prj_sum'], ref_prj_sum[ang_id])     
             print(f'shift projection image at angle={angle_list[ang_id]}: {r}, {c}')   
