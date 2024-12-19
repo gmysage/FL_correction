@@ -799,7 +799,7 @@ def cal_atten_with_direction(img4D, cs, param, position_det='r', enable_scale=Fa
             tmp1 = fast_rot90_3D(atten_fl[ele], ax=0, mode='c-clock')
             atten3D_fl[ele] = tmp1
 
-            tmp2 = fast_rot90_3D(atten_xray[ele], ax=0, mode='c-clock')
+            tmp2 = fast_rot90_3D(atten_xray, ax=0, mode='c-clock')
             atten3D_xray[ele] = tmp2
         if position_det == 'l': 
             tmp = atten[ele][:, :, ::-1]
@@ -810,7 +810,7 @@ def cal_atten_with_direction(img4D, cs, param, position_det='r', enable_scale=Fa
             tmp1 = fast_rot90_3D(tmp1, ax=0, mode='clock')
             atten3D_fl[ele] = tmp1
 
-            tmp2 = atten_xray[ele][:, :, ::-1]
+            tmp2 = atten_xray[:, :, ::-1]
             tmp2 = fast_rot90_3D(tmp2, ax=0, mode='clock')
             atten3D_xray[ele] = tmp2
     return atten3D, atten3D_fl, atten3D_xray
