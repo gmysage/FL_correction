@@ -575,6 +575,49 @@ def write_attenuation(elem, data, current_angle, angle_id, file_path='./Angle_pr
     fname = fn_root + 'atten_' + elem + '_prj_' + f'{angle_id:04d}' + '.tiff'
     io.imsave(fname, data.astype(np.float32))
 
+def write_attenuation_fl(elem, data, current_angle, angle_id, file_path='./Angle_prj'):
+
+    """
+    write fluorescence attenuation coefficient for element:
+
+    'atten_gd_prj_-45.h5'
+
+    where:  elem = 'gd'
+            current_angle = -45
+
+    """
+
+    mk_directory(file_path)
+    if file_path[-1] == '/':
+        fn_root  = file_path
+    else:
+        fn_root  = file_path + '/'
+    fname = fn_root + 'atten_fl_' + elem + '_prj_' + f'{angle_id:04d}' + '.tiff'
+    io.imsave(fname, data.astype(np.float32))
+
+def write_attenuation_xray(elem, data, current_angle, angle_id, file_path='./Angle_prj'):
+
+    """
+    write incident x-ray attenuation coefficient for element:
+
+    'atten_gd_prj_-45.h5'
+
+    where:  elem = 'gd'
+            current_angle = -45
+
+    """
+
+    mk_directory(file_path)
+    if file_path[-1] == '/':
+        fn_root  = file_path
+    else:
+        fn_root  = file_path + '/'
+    fname = fn_root + 'atten_incident_xray_' + elem + '_prj_' + f'{angle_id:04d}' + '.tiff'
+    io.imsave(fname, data.astype(np.float32))
+
+
+
+
 
 
 def write_projection(mode, elem, data, current_angle, angle_id, file_path='./Angle_prj'):
@@ -744,17 +787,33 @@ def cal_atten_with_direction(img4D, cs, param, position_det='r', enable_scale=Fa
                                                detector_offset_angle=detector_offset_angle, num_cpu=num_cpu)
 
     atten3D = {}
+    atten3D_fl = {}
+    atten3D_xray = {}
     # reverse the rotation 
     for i in range(n_type):
         ele = elem_type[i]
         if position_det == 'r': 
             tmp = fast_rot90_3D(atten[ele], ax=0, mode='c-clock')
             atten3D[ele] = tmp
+
+            tmp1 = fast_rot90_3D(atten_fl[ele], ax=0, mode='c-clock')
+            atten3D_fl[ele] = tmp1
+
+            tmp2 = fast_rot90_3D(atten_xray[ele], ax=0, mode='c-clock')
+            atten3D_xray[ele] = tmp2
         if position_det == 'l': 
             tmp = atten[ele][:, :, ::-1]
             tmp = fast_rot90_3D(tmp, ax=0, mode='clock')
             atten3D[ele] = tmp
-    return atten3D
+
+            tmp1 = atten_fl[ele][:, :, ::-1]
+            tmp1 = fast_rot90_3D(tmp1, ax=0, mode='clock')
+            atten3D_fl[ele] = tmp1
+
+            tmp2 = atten_xray[ele][:, :, ::-1]
+            tmp2 = fast_rot90_3D(tmp2, ax=0, mode='clock')
+            atten3D_xray[ele] = tmp2
+    return atten3D, atten3D_fl, atten3D_xray
 
 
 
@@ -1579,6 +1638,11 @@ def cal_and_save_atten_prj(param, cs, recon4D, angle_list, ref_prj, fsave='./Ang
             write_projection('m', elem, prj[i, ang_id], angle_list[ang_id], ang_id, fsave)
             write_attenuation(elem, res['atten'][elem], angle_list[ang_id], ang_id, fsave)
 
+            # write fluorecent attenuantion
+            write_attenuation_fl(elem, res['atten_fl'][elem], angle_list[ang_id], ang_id, fsave)
+
+            # write incident xray attenuantion
+            write_attenuation_xray(elem, res['atten_xray'][elem], angle_list[ang_id], ang_id, fsave)
 
 def cal_atten_prj_at_angle(angle, img4D, param, cs, position_det='r', enable_scale=False,
                            detector_offset_angle=0, num_cpu=8):
@@ -1591,7 +1655,7 @@ def cal_atten_prj_at_angle(angle, img4D, param, cs, position_det='r', enable_sca
     img4D_r = rot3D(img4D, angle)
     prj = {}
     prj_sum = 0
-    atten = cal_atten_with_direction(img4D_r, cs, param, position_det='r', enable_scale=enable_scale,
+    atten, atten_fl, atten_xray = cal_atten_with_direction(img4D_r, cs, param, position_det='r', enable_scale=enable_scale,
                                      detector_offset_angle=detector_offset_angle, num_cpu=num_cpu)
     for j in range(n_type):
         ele = elem_type[j]
@@ -1601,6 +1665,8 @@ def cal_atten_prj_at_angle(angle, img4D, param, cs, position_det='r', enable_sca
     res['atten'] = atten
     res['prj'] = prj
     res['prj_sum'] = prj_sum
+    res['atten_fl'] = atten_fl
+    res['atten_xray'] = atten_xray
     return res
 
 

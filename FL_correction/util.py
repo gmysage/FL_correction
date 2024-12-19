@@ -17,6 +17,19 @@ def read_attenuation(angle_id, fpath_atten, elem):
     coef_att = io.imread(fn_att)
     return coef_att
 
+def read_attenuation_fl(angle_id, fpath_atten, elem):
+    #fpath_atten = fn_root + f'/Angle_prj_{iter_id}'
+    fn_att = fpath_atten + f'/atten_fl_{elem}_prj_{angle_id:04d}.tiff'
+    coef_att_fl = io.imread(fn_att)
+    return coef_att_fl
+
+
+def read_attenuation_xray(angle_id, fpath_atten, elem):
+    #fpath_atten = fn_root + f'/Angle_prj_{iter_id}'
+    fn_att = fpath_atten + f'/atten_incident_xray_{elem}_prj_{angle_id:04d}.tiff'
+    coef_att_xray = io.imread(fn_att)
+    return coef_att_xray
+
 
 def read_projection(angle_id, fpath_atten, elem):
     #fpath_atten = fn_root + f'/Angle_prj_{iter_id}'
