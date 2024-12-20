@@ -38,11 +38,29 @@ def read_projection(angle_id, fpath_atten, elem):
     return img_prj
 
 
-def read_attenuation_at_all_angle(angle_list, fpath_atten, elem):
+def read_attenuation_at_all_angle(angle_list, fpath_atten, elem, mode='all'):
+    '''
+    mode:
+    "all": read total attenuation from xrf and incident x-ray
+    "fl": read fluorescent atten
+    "xray": read incident x-ray attenuation
+
+    '''
     print('reading attenuation files ...')
     n = len(angle_list)
     for i in trange(n):
-        tmp = read_attenuation(i, fpath_atten, elem)
+        if mode == 'fl':
+            if i==0:
+                print('reading fl')
+            tmp = read_attenuation_fl(i, fpath_atten, elem)
+        elif mode == 'xray':
+            tmp = read_attenuation_xray(i, fpath_atten, elem)
+            if i==0:
+                print('reading xray')
+        else:
+            tmp = read_attenuation(i, fpath_atten, elem)
+            if i==0:
+                print('reading full atten')
         if i == 0: 
             s = tmp.shape
             coef_att4D = np.zeros((n, *s))
