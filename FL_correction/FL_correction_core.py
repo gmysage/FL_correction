@@ -1115,6 +1115,7 @@ def load_param(fn):
     res['em_cs'] = em_cs
     res['elem_type'] = elem_type
     res['elem_compound'] = elem_comp
+    res['eng_list'] = XEng_list
     return res
 
 
@@ -1879,6 +1880,22 @@ def prepare_atten_I(elem, img3D_shape, angle_list, fpath_atten):
     I_slices = generate_I_slices(elem, s_img, angle_list, bad_angle_index=[], file_path=fpath_atten)
 
     return Atten_slices, I_slices
+
+
+def get_K_edge(elem='Ni'):
+    return xraylib.EdgeEnergy(xraylib.SymbolToAtomicNumber(elem), 0)
+
+def get_attenuation_length_K_edge(elem='Ni', compound='LiNiO2', rho=4.65):
+    edge = get_K_edge(elem)
+    e0 = edge - 0.1
+    e1 = edge + 0.1
+    eng_test = np.linspace(e0, e1, 1000)
+    tmp_cs = np.zeros(1000)
+    for i in range(1000):
+        tmp_cs[i] = xraylib.CS_Total_CP(compound, eng_test[i])
+    jump = np.max(tmp_cs) - np.min(tmp_cs)
+    atten_length = 1.0 / jump / rho
+    return atten_length
 
 
 ##
