@@ -18,6 +18,7 @@ from tqdm import tqdm, trange
 from multiprocessing import Pool, cpu_count
 from functools import partial
 from math import sin, cos, ceil, floor, pi
+from skimage.transform import rescale
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -2168,7 +2169,7 @@ def get_attenuation_length_K_edge(elem='Ni', compound='LiNiO2', rho=4.65):
     atten_length = 1.0 / jump / rho
     return atten_length
 
-def read_and_rescale_atten_coef(proj_raw, fn_root, current_iter_id, elem_type, prj_prefix='Angle_prj', scale_factor=2):
+def read_and_rescale_atten_coef(proj_raw, fn_root, current_iter_id, elem_type, prj_prefix='Angle_prj', scale_factor=2, add_n_pix=[0,0,0]):
     fn_read_folder = fn_root + f'/{prj_prefix}_{current_iter_id:02d}'
     fn_save_folder = fn_root + f'/{prj_prefix}_{-current_iter_id:02d}'
     tmp = np.sort(glob.glob(fn_read_folder + f'/atten_fl_{elem_type[0]}_prj*'))
@@ -2178,15 +2179,47 @@ def read_and_rescale_atten_coef(proj_raw, fn_root, current_iter_id, elem_type, p
         for i in trange(n_angle):
             coef_att = read_attenuation(i, fn_read_folder, elem)
             coef_scale = rescale(coef_att, b)
+            coef_scale = pad_matrix_lines(coef_scale, add_n_pix)
             write_attenuation(elem, coef_scale, i, fn_save_folder)
 
             coef_fl = read_attenuation_fl(i, fn_read_folder, elem)
             coef_fl_scale = rescale(coef_fl, b)
+            coef_fl_scale = pad_matrix_lines(coef_fl_scale, add_n_pix)
             write_attenuation_fl(elem, coef_fl_scale, i, fn_save_folder)
 
             coef_xray = read_attenuation_xray(i, fn_read_folder, elem)
             coef_xray_scale = rescale(coef_xray, b)
+            coef_xray_scale = pad_matrix_lines(coef_xray_scale, add_n_pix)
             write_attenuation_xray(elem, coef_xray_scale, i, fn_save_folder)
 
             write_projection('m', elem, proj_raw[elem_id, i], i, i, fn_save_folder)
+
+def pad_matrix_lines(data, n_pix=[0,0,0]):
+    s = np.array(data.shape)
+    n_pix = np.array(n_pix)
+    if len(s) != len(n_pix):
+        print('dimension disagree')
+    else:
+        s1 = s + n_pix
+        d = np.zeros(s1)
+        if len(s) == 2:
+            d[:s[0], :s[1]] = data
+            for r in range(s[0], s1[0]):
+                d[r] = d[s[0]-1]
+            for c in range(s[1], s1[1]):
+                d[:, c] = d[:, s[1]-1]
+        if len(s) == 3:
+            d[:s[0], :s[1], :s[2]] = data
+            for h in range(s[0], s1[0]):
+                d[h] = d[s[0]-1]
+            for r in range(s[1], s1[1]):
+                d[:, r] = d[:, s[1]-1]
+            for c in range(s[2], s1[2]):
+                d[:, :, c] = d[:, :, s[2]-1]
+        else:
+            d = data
+            print('Nothing has been done')
+    return d
+
+
 ##
