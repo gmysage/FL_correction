@@ -25,10 +25,9 @@ def remove_elem_in_dataset(dataset, element_type, elem_to_remove):
 
 
 
-def remove_elem_in_dict(dict, elem_tom_remove):
+def remove_elem_in_dict(dict, elem_to_remove):
     keys = dict.keys()
     dict_new = {}
-    idx = 0
     for i, key in enumerate(keys):
         if elem_to_remove in key:
             continue

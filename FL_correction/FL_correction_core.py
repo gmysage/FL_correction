@@ -93,7 +93,7 @@ def mlem_matrix(img2D, p, y, n_iter=10):
     y[y<0] = 0
     if len(y.shape) == 1:
         y = y.reshape((len(y), 1))
-    for n in trange(n_iter):
+    for _ in trange(n_iter):
         Pf = p @ A_new
         Pf[Pf < 1e-6] = 1
         t1 = p
@@ -132,10 +132,57 @@ def load_mask3D(fn='mask3D.h5'):
         mask3D[k] = np.array(f[k])
     return mask3D
 
+def extract_single_value_param(param, energy_angle_id, dict_use_ref={}):
+    elem_type = param['elem_type']
+    elem_comp = param['elem_compound']
+    param_angle_energy = param.copy()
+
+    cs = param['cs']
+    cs_angle_energy = cs.copy()
+    cs_angle_energy_type = type(cs_angle_energy[f'{elem_comp[0]}-x'])
+    if cs_angle_energy_type is np.ndarray or list:
+        for ele_comp in elem_comp:
+            if len(cs[f'{ele_comp}-x']) == 1:
+                cs_angle_energy[f'{ele_comp}-x'] = cs[f'{ele_comp}-x']
+            else:
+                cs_angle_energy[f'{ele_comp}-x'] = cs[f'{ele_comp}-x'][energy_angle_id]
+
+    em_cs = param['em_cs']
+    em_cs_angle_energy = em_cs.copy()
+    em_cs_angle_energy_type = type(em_cs_angle_energy[f'{elem_type[0]}'])
+
+    if em_cs_angle_energy_type is np.ndarray or list:
+        for ele in elem_type:
+            if len(em_cs[ele]) == 1:
+                em_cs_angle_energy[ele] = em_cs[ele]
+            else:
+                em_cs_angle_energy[ele] = em_cs[ele][energy_angle_id]
+
+    """
+    if reference spectrum provided, will compose the absorption cs with reference and chemical 
+    concentration, e.g., dict_use_ref['ref_3D'] = (Ni2, Ni3), 
+    Here, we only pick up the cs of reference at individual energy. 
+    Note that id_angle == id_energy
+
+    It pass the 'dict_use_ref' to function 'cal_atten_3D' to do real calculation 
+    """
+    if len(dict_use_ref) > 0:
+        if dict_use_ref['use_ref']:  # True of False
+            # update absorption cross-section
+            for k in cs_angle_energy.keys():
+                if 'x_ref' in k:
+                    cs_angle_energy[k] = cs[k][energy_angle_id]
+            # update emission cross-section
+            for k in em_cs_angle_energy.keys():
+                if ('x_ref' in k) and (not 'n_ref' in k):
+                    em_cs_angle_energy[k] = em_cs[k][energy_angle_id]
+
+    param_angle_energy['cs'] = cs_angle_energy
+    param_angle_energy['em_cs'] = em_cs_angle_energy
+    return param_angle_energy
 
 
-def re_projection(img3D, angle_list, ax=1):
-
+def re_projection(img3D, angle_list, ax=1, order=3):
     """
     Project the 3D image along axis = ax after rotating the angle in the angle_list
 
@@ -166,18 +213,63 @@ def re_projection(img3D, angle_list, ax=1):
         img_prj = np.zeros([ang_size[0], im_size[0], im_size[2]])
         for i in range(ang_size[0]):
             print(f'current angle: {angle_list[i]}')
-            img_prj[i] = np.sum(rot3D(img3D, angle_list[i]), ax)
+            img_prj[i] = np.sum(rot3D(img3D, angle_list[i], order), ax)
 
     elif ax == 2:  # sum up the colume --> projection from "left" to "right"
         img_prj = np.zeros([ang_size[0], im_size[0], im_size[1]])
         for i in range(ang_size[0]):
             print(f'current angle: {angle_list[j]}')
-            img_prj[i] = np.sum(rot3D(img3D, angle_list[j]), ax)
+            img_prj[i] = np.sum(rot3D(img3D, angle_list[j], order), ax)
     else:
         print('check "ax". Nothing done with the image!')
         return img3D
     return img_prj
 
+def re_projection_with_emission_and_attenuation(img3D, angle_list, param=None, rho_compound=1,
+                                                atten_coef=None, elem='Ni', use_ref=False):
+    '''
+    calculate the xrf emission of the 2D projection from a 3D volume at all angles
+    param contains the mass density (rho), pixel size (pix) and emission cross-section (em_cs)
+
+    xrf(pixel) = concentration(pixel) * cs * rho * pixel_size
+
+    if use_ref = True, it will read emission cross-section value from:
+        param['em_cs']['Ni_ref1']
+        param['em_cs']['Ni_ref2']
+
+        img3D = (Ni_ref1_3D, Ni_ref2_3D)
+    else:
+        img3D = Ni_3D
+    '''
+    if param is None:
+        prj = re_projection(img3D, angle_list, ax=1)
+    else:
+        pix = param['pix']
+        em_cs = param['em_cs']
+        n = len(angle_list)
+        if atten_coef is None:
+            atten_coef = np.ones(n)
+        if use_ref==False:# regular
+            s = img3D.shape
+            prj = np.zeros((n, s[0], s[2]))
+            for i_angle in trange(n):
+                img3D_r = rot3D(img3D * rho_compound, angle_list[i_angle])
+                coef = em_cs[elem][i_angle] * pix
+                img_xrf = img3D_r * atten_coef[i_angle] * coef
+                prj[i_angle] = np.sum(img_xrf, axis=1)
+        else:
+            n_ref = em_cs['n_ref'] # number of ref: e.g in em_cs: 'Ni_ref1', 'Ni_ref2'
+            s = img3D[0].shape # e.g., 100 x 100 x 100
+            prj = np.zeros((n, s[0], s[2]))
+            for i_angle in trange(n):
+                img_xrf = 0
+                for i_ref in range(n_ref):
+                    em_ref = em_cs[f'{elem}_ref{i_ref+1}']
+                    img_xrf += em_ref[i_angle] * rho_compound * pix * img3D[i_ref]
+                xrf_r = rot3D(img_xrf, angle_list[i_angle])
+                xrf_r = xrf_r * atten_coef[i_angle]
+                prj[i_angle] = np.sum(xrf_r, axis=1)
+    return prj
 
 def generate_detector_mask(alfa0, theta0, leng0):
 
@@ -555,7 +647,7 @@ def polyval2d(x, y, coef):
 
 
 
-def write_attenuation(elem, data, current_angle, angle_id, file_path='./Angle_prj'):
+def write_attenuation(elem, data, angle_id, file_path='./Angle_prj'):
 
     """
     write attenuation coefficient into file in the directory of './Angle_prj' as:
@@ -575,7 +667,7 @@ def write_attenuation(elem, data, current_angle, angle_id, file_path='./Angle_pr
     fname = fn_root + 'atten_' + elem + '_prj_' + f'{angle_id:04d}' + '.tiff'
     io.imsave(fname, data.astype(np.float32))
 
-def write_attenuation_fl(elem, data, current_angle, angle_id, file_path='./Angle_prj'):
+def write_attenuation_fl(elem, data, angle_id, file_path='./Angle_prj'):
 
     """
     write fluorescence attenuation coefficient for element:
@@ -595,15 +687,15 @@ def write_attenuation_fl(elem, data, current_angle, angle_id, file_path='./Angle
     fname = fn_root + 'atten_fl_' + elem + '_prj_' + f'{angle_id:04d}' + '.tiff'
     io.imsave(fname, data.astype(np.float32))
 
-def write_attenuation_xray(elem, data, current_angle, angle_id, file_path='./Angle_prj'):
+def write_attenuation_xray(elem, data, angle_id, file_path='./Angle_prj'):
 
     """
     write incident x-ray attenuation coefficient for element:
 
-    'atten_gd_prj_-45.h5'
+    'atten_gd_prj_0000.h5'
 
     where:  elem = 'gd'
-            current_angle = -45
+            angle_id = 0
 
     """
 
@@ -614,10 +706,6 @@ def write_attenuation_xray(elem, data, current_angle, angle_id, file_path='./Ang
         fn_root  = file_path + '/'
     fname = fn_root + 'atten_incident_xray_' + elem + '_prj_' + f'{angle_id:04d}' + '.tiff'
     io.imsave(fname, data.astype(np.float32))
-
-
-
-
 
 
 def write_projection(mode, elem, data, current_angle, angle_id, file_path='./Angle_prj'):
@@ -645,7 +733,6 @@ def write_projection(mode, elem, data, current_angle, angle_id, file_path='./Ang
         fn_root = file_path 
     else:
         fn_root = file_path + '/'
-
     if mode == 'single_file' or mode == 's':
         fname = fn_root + elem + '_ref_prj_single_file.h5'
         with h5py.File(fname, 'w') as hf:
@@ -653,13 +740,8 @@ def write_projection(mode, elem, data, current_angle, angle_id, file_path='./Ang
             hf.create_dataset('angle_list', data=current_angle)
     elif mode == 'multi_file' or mode == 'm':
         fname = fn_root + elem + '_ref_prj_' + f'{angle_id:04d}' + '.tiff'
-        #print(fname)
         io.imsave(fname, data.astype(np.float32))
-        '''
-        with h5py.File(fname, 'w') as hf:
-            hf.create_dataset('dataset_1', data=data)
-        '''
-    else: print ('unrecongnized "mode"')
+    else: print ('unrecognized "mode"')
 
 
 def pre_treat(*args):
@@ -714,6 +796,7 @@ def get_atten_coef(elem_type, elem_compound, XEng_list, em_E):
     n = len(elem_type)
     cs['elem_type'] = elem_type
     cs['elem_compound'] = elem_compound
+    cs['x'] = XEng_list # incident x-ray energy
     for i in range(n):
         # atten at incident x-ray
         cs[f'{ec[i]}-x'] = np.zeros(len(XEng_list))
@@ -728,7 +811,9 @@ def get_atten_coef(elem_type, elem_compound, XEng_list, em_E):
     return cs
 
 
-def cal_atten_with_direction(img4D, cs, param, position_det='r', enable_scale=False, detector_offset_angle=0, num_cpu=8):
+
+def cal_atten_with_direction(img4D_r, param_angle_energy, position_det='r', enable_scale=False,
+                             detector_offset_angle=0, dict_use_ref_rotate={}, num_cpu=8):
     """
     Calculate the attenuation of incident x-ray, fluorescent with given
     experiment configuration. Assume x-ray is passing from front to the back
@@ -763,15 +848,29 @@ def cal_atten_with_direction(img4D, cs, param, position_det='r', enable_scale=Fa
     incident x-ray Attenuation
     """
 
-    elem_type = cs['elem_type']
-    n_type = img4D.shape[0]
+    elem_type = param_angle_energy['elem_type']
+    n_type = img4D_r.shape[0]
     
     # change detector position from "right (or left) to "front"    
     if position_det == 'r': # if detector locates on the right side:
-        img4D_r = fast_rot90_4D(img4D, ax=0, mode='clock')
+        img4D_r = fast_rot90_4D(img4D_r, ax=0, mode='clock')
     if position_det == 'l': # if detector locates on the left side:
-        img4D_r = fast_rot90_4D(img4D, ax=0, mode='c-clock')
+        img4D_r = fast_rot90_4D(img4D_r, ax=0, mode='c-clock')
         img4D_r = img4D_r[:, :, :, ::-1]
+
+    # need to rotate dict_use_ref['ref_3D']
+    if len(dict_use_ref_rotate) > 0:
+        if dict_use_ref_rotate['use_ref']:
+            ref_3D = dict_use_ref_rotate['ref_3D']
+            n_ref = len(ref_3D)
+            if position_det == 'r': # if detector locates on the right side:
+                for i in range(n_ref):
+                    dict_use_ref_rotate['ref_3D'][i] = fast_rot90_3D(ref_3D[i], ax=0, mode='clock')
+
+            if position_det == 'l': # if detector locates on the left side:
+                for i in range(n_ref):
+                    ref_3D[i] = fast_rot90_3D(ref_3D[i], ax=0, mode='c-clock')
+                    dict_use_ref_rotate['ref_3D'][i] = ref_3D[i][:, :, ::-1]
 
     '''
     if binning > 1:
@@ -783,8 +882,10 @@ def cal_atten_with_direction(img4D, cs, param, position_det='r', enable_scale=Fa
         img4D_b = img4D_r.copy()
     '''
 
-    atten, atten_fl, atten_xray = cal_atten_3D(img4D_r, cs, param, enable_scale=enable_scale,
-                                               detector_offset_angle=detector_offset_angle, num_cpu=num_cpu)
+    atten, atten_fl, atten_xray = cal_atten_3D(img4D_r, param_angle_energy, enable_scale=enable_scale,
+                                               detector_offset_angle=detector_offset_angle,
+                                               dict_use_ref_rotate=dict_use_ref_rotate,
+                                               num_cpu=num_cpu)
 
     atten3D = {}
     atten3D_fl = {}
@@ -817,7 +918,7 @@ def cal_atten_with_direction(img4D, cs, param, position_det='r', enable_scale=Fa
 
 
 
-def generate_H(elem, ref3D_tomo, sli, angle_list, bad_angle_index=[], file_path='./Angle_prj', flag=1):
+def generate_H(elem, sli, angle_list, bad_angle_index=[], fpath_atten='./Angle_prj', flag=1, shape_2D=[]):
     """
     Generate matriz H and I for solving eqution: H*C=I
     In folder of file_path:
@@ -849,44 +950,42 @@ def generate_H(elem, ref3D_tomo, sli, angle_list, bad_angle_index=[], file_path=
     --------
     2D array
     """
-
-    if file_path[-1] == '/':
-        fpre_att = file_path + 'atten_' + elem + '_prj_'
+    n = len(angle_list)
+    if flag: # read from file
+        atten_3D = []
+        for i in range(n):
+            att = read_attenuation(i, fpath_atten, elem)[sli]
+            atten_3D.append(att)
+        atten_3D = np.array(atten_3D)
     else:
-        fpre_att = file_path + '/atten_' + elem + '_prj_'
+        s = shape_2D
+        atten_3D = np.ones((n, *s))
+    theta_list = np.array(angle_list / 180 * np.pi)
+    atten_3D = exclude_idx(atten_3D, bad_angle_index)
+    theta_list = exclude_idx(theta_list, bad_angle_index)
+    H_tot = generate_H_from_atten_coef(atten_3D, theta_list)
+    return H_tot
 
-    ref_tomo = ref3D_tomo.copy()
-    theta = np.array(angle_list / 180 * np.pi)
-    num = len(theta) - len(bad_angle_index)
-    s = ref_tomo.shape
+def generate_H_from_atten_coef(atten_list, theta_list):
+    '''
+    atten_list = (60, 100, 100) --> (n_angles, n_pix, n_pix)
+    theta_list (60, ): in unit if radians, if not, will convert it automatically
+    '''
+    if np.max(np.abs(theta_list)) > 2 * np.pi:
+        theta_list = theta_list / 180. * np.pi
+    num = len(theta_list)
+    s = atten_list.shape # (60, 80, 80)
+
+    H_tot = np.zeros([s[2] * num, s[2] * s[2]])
+
     cx = (s[2]-1) / 2.0       # center of col
-    cy = (s[1]-1) / 2.0       # center of row
+    cy = (s[1]-1) / 2.0
 
-    '''
-    if flag:
-        print('Reading attenuation from file ...')
-    else:
-        print('No attenation read, generate non-attenuated matrix ...')
-    '''
-    H_tot = np.zeros([s[2]*num, s[2]*s[2]])
-    k = -1
-    for i in trange(len(theta)):
-        if i in bad_angle_index:
-            continue
-        k = k + 1
-        #print(f'current angle: {angle_list[i]}')
-        if flag:
-            #f_att = fpre_att + f'{angle_list[i]:04d}.tiff'
-            f_att = fpre_att + f'{i:04d}.tiff'
-            att = io.imread(f_att)
-            if len(att.shape) == 3:
-                att = att[sli]
-
-        else:
-            att = np.ones([s[1],s[2]])
-
-        T = np.array([[np.cos(-theta[i]), -np.sin(-theta[i])],[np.sin(-theta[i]), np.cos(-theta[i])]])
-        H = np.zeros([s[2], s[1]*s[2]])
+    for i in trange(len(theta_list)):
+        att = atten_list[i]
+        theta1 = theta_list[i]
+        T = np.array([[np.cos(-theta1), -np.sin(-theta1)],[np.sin(-theta1), np.cos(-theta1)]])
+        H = np.zeros([s[2], s[1] * s[2]])
         for col in range(s[2]):
             for row in range(s[1]):
                 p = row
@@ -912,10 +1011,8 @@ def generate_H(elem, ref3D_tomo, sli, angle_list, bad_angle_index=[], file_path=
                 if (r_up >= 0):
                     H[q, ur] = H[q, ur] + att[p,q] * (1-r_frac) * c_frac
                 H[q, dr] =  H[q, dr] + att[p, q] * r_frac * c_frac
-        H_tot[k*s[2] : (k+1)*s[2], :] = H
-
+        H_tot[i * s[2]: (i + 1) * s[2], :] = H
     return H_tot
-
 
 def generate_I(elem, ref3D_tomo, sli, angle_list, bad_angle_index=[], file_path='./Angle_prj'):
 
@@ -993,6 +1090,28 @@ def generate_I_slices(elem, img3D_shape, angle_list, bad_angle_index=[], file_pa
     return I_slices
 
 
+def scale_expand_H_with_emission_coef(H_tot, em_cs_ref):
+    s = em_cs_ref.shape # e.g., (60, 2) or (60,)
+    if len(s) == 1:
+        em_cs_ref = em_cs_ref.reshape((s[0], 1))
+    s = em_cs_ref.shape
+    n_angle = s[0]
+    n_ref = s[1]
+
+    s0 = H_tot.shape # e.g., (60x80, 80x80) --> image size = (80,80), n_angle=60
+    n_pix = int(np.sqrt(s0[1])) # 80
+    H_comb = np.zeros((s0[0], s0[1]*n_ref))
+    for i in range(n_angle):
+        rs = i * n_pix
+        re = (i + 1) * n_pix
+        for j in range(n_ref):
+            cs = j * s0[1]
+            ce = (j + 1) * s0[1]
+            H_comb[rs:re, cs:ce] = H_tot[rs:re] * em_cs_ref[i, j]
+    return H_comb
+
+
+
 def load_param(fn):
 
     """
@@ -1004,7 +1123,7 @@ def load_param(fn):
     Pixel size(nm):    50
     density(g/cm3):    5.11
     emission line energy: 2.044, 4.647, 7.899
-    emission cross section(cm2/g): 1.313, 3.421, 14.97
+    emission cross section (cm2/g): 1.313, 3.421, 14.97
 
     """
 
@@ -1073,8 +1192,6 @@ def load_param(fn):
         ele = elem_type[i]
         ele_comp = elem_comp[i]
         atom_idx = xraylib.SymbolToAtomicNumber(ele)
-
-
         em_E[ele] = em_eng[i]
         rho_elem[ele_comp] = rho[i]
         # M[ele] = xraylib.AtomicWeight(atom_idx)
@@ -1090,7 +1207,7 @@ def load_param(fn):
                     # in case The excitation energy too low to excite the shell,
                     # set to a large number, when normalize the XRF with emission cross-section, it will effectively
                     # reduce the xrf counts
-                    current_cs = -100
+                    current_cs = 0
                 em_cs[ele].append(current_cs)
             em_cs[ele] = np.array(em_cs[ele])
             valid_em_cs = em_cs[ele][em_cs[ele]>0]
@@ -1105,6 +1222,11 @@ def load_param(fn):
                 except: # in case The excitation energy too low to excite the shell
                     current_cs = 1e-2
                 em_cs[ele].append(current_cs)
+    em_cs['x'] = XEng_list
+
+    # get absorption cross-section
+    cs = get_atten_coef(elem_type, elem_comp, XEng_list, em_E)
+
     res = {}
     res['XEng'] = XEng_list
     res['nelem'] = nelem
@@ -1116,6 +1238,8 @@ def load_param(fn):
     res['elem_type'] = elem_type
     res['elem_compound'] = elem_comp
     res['eng_list'] = XEng_list
+    res['cs'] = cs
+    print(f'\nkeys in param:\n{list(res.keys())}')
     return res
 
 
@@ -1260,7 +1384,7 @@ def atten_2D_row_mpi(row, mu_ele, display_flag=True, num_cpu=4):
     return res
 
 
-def cal_frac(*args):
+def cal_frac(*args, scale_range=[0.1, 0.9]):
     if len(args) == 1:
         img = args[0].copy()
         s = img.shape
@@ -1273,7 +1397,6 @@ def cal_frac(*args):
     n = s[0]
     frac = np.zeros(s)
     img_sum = np.sum(img, axis=0)
-    
     '''
     sum_sort = np.sort(img_sum[img], axis=None)
     pix_max = sum_sort[int(0.95*len(sum_sort))]
@@ -1281,20 +1404,26 @@ def cal_frac(*args):
     pix_max = np.max(img_sum)       
     #img_mask = img_sum > (pix_max)*1e-2
     img_mask = adaptive_threshold(img_sum, fill_hole=True, dilation=1)
-    img_sum =  img_sum *img_mask
+    if np.max(img_mask) == 0: # fails in adaptive_threshold
+        img_mask = 1
+    img_sum =  img_sum * img_mask
 
     sum_sort = np.sort(img_sum[img_sum>(pix_max)*0.1])
-    pix_max_update = sum_sort[int(0.9*len(sum_sort))]
+    try:
+        pix_max_update = sum_sort[int(0.95*len(sum_sort))]
+    except:
+        pix_max_update = sum_sort[-1]
     pix_median = np.median(sum_sort)
 
     for i in range(n):
         tmp = rm_abnormal(img[i] / img_sum)
-        tmp_sort = np.sort(tmp[tmp>0])
-        l = len(tmp_sort)
-        if l > 100:
-            tmp_sort = tmp_sort[int(l*0.1):int(l*0.9)]
-            tmp[tmp >= tmp_sort[-1]] = tmp_sort[-1]
-            tmp[tmp <= tmp_sort[0]] = tmp_sort[0]
+        if len(scale_range):
+            tmp_sort = np.sort(tmp[tmp>0])
+            l = len(tmp_sort)
+            if l > 100:
+                tmp_sort = tmp_sort[int(l*scale_range[0]):int(l*scale_range[1])]
+                tmp[tmp >= tmp_sort[-1]] = tmp_sort[-1]
+                tmp[tmp <= tmp_sort[0]] = tmp_sort[0]
         frac[i] = tmp * img_mask
     res = {}
     res['img_sum'] = img_sum
@@ -1304,6 +1433,39 @@ def cal_frac(*args):
     res['img_mask'] = img_mask
     return res
 
+"""
+def cal_frac_simple(*args):
+    if len(args) == 1:
+        img = args[0].copy()
+        s = img.shape
+        if len(s) == 2:
+            img = np.expand_dims(img, 0)
+    else:
+        img = pre_treat(*args)
+
+    s = img.shape
+    n = s[0]
+    frac = np.zeros(s)
+    img_sum = np.sum(img, axis=0)
+
+    pix_max = np.max(img_sum)
+    img_mask = adaptive_threshold(img_sum, fill_hole=True, dilation=1)
+    img_sum = img_sum * img_mask
+
+    sum_sort = np.sort(img_sum[img_sum > (pix_max) * 0.1])
+    pix_max_update = sum_sort[int(0.95 * len(sum_sort))]
+    pix_median = np.median(sum_sort)
+
+    for i in range(n):
+        frac[i]  = rm_abnormal(img[i] / img_sum)
+    res = {}
+    res['img_sum'] = img_sum
+    res['frac'] = frac
+    res['pix_median'] = pix_median
+    res['pix_max'] = pix_max_update
+    res['img_mask'] = img_mask
+    return res
+"""
 
 @jit
 def retrieve_data_mask(data3d, row, col, sli, mask):
@@ -1365,31 +1527,26 @@ def retrieve_data_mask(data3d, row, col, sli, mask):
     return data
 
 
-def cal_atten_3D(img4D, cs, param, enable_scale=False, detector_offset_angle=0, num_cpu=8):
+def cal_atten_3D(img4D_r, param_angle_energy, enable_scale=False,
+                 detector_offset_angle=0, dict_use_ref_rotate={}, num_cpu=8):
+    """
+    Geometry:
+        XRF Detector is in front of 3D volume (h, r, c) --> it is at the end of row (r)
+        incident X-ray is on the left of 3D volume (h, r, c) --> it is at the beginning of column (c)
 
-    '''
     special note:
     detector_offset_angle: angle of detector away from 90 degrees to incident xray
     e.g. 0: detector is at 90 deg to incident x-ray
         15: detortor is at 75 deg to incident x-ray, in this case, need to c-clock rotate data to calculate xrf-atten
+    """
 
-    '''
-    elem_type = cs['elem_type']
-    elem_compound = cs['elem_compound']
-    rho = param['rho']
-    pix = param['pix']
-    #img_thick = param['img_thick']
-    res = cal_frac(img4D)
-    n_type = img4D.shape[0]
+    elem_type = param_angle_energy['elem_type']
+    res = cal_frac(img4D_r, scale_range=[0.1, 0.9])
     img_sum = res['img_sum']
     pix_max = res['pix_max']
-    pix_median = res['pix_median']
     frac = res['frac']
-    s = img_sum.shape # detector is in the front of image
-    mu = {}     # atten coef: cm2/g * g/cm3 -> cm-1
-    atten_single_pix = {} # single-pix atten coef of each element
+    atten_fl = {} # single-pix xrf attenuation coef of each element
     atten = {}
-
     if enable_scale:
         #scale_ratio = img_sum / pix_median
         scale_ratio = img_sum / pix_max
@@ -1397,71 +1554,29 @@ def cal_atten_3D(img4D, cs, param, enable_scale=False, detector_offset_angle=0, 
     else:
         scale_ratio = 1
 
-    for i, xrf_eng in enumerate(elem_type + ['x']):
-        mu[xrf_eng] = 0
-        '''
-        for j, atten_ele in enumerate(elem_type):
-            mu[xrf_eng] += frac[j] * cs[f'{atten_ele}-{xrf_eng}'] * rho[atten_ele] * scale_ratio
-        '''
-        for j, elem_comp in enumerate(elem_compound):
-            # e.g
-            # mu['Ni'] = mu[7.4keV] = f[LiNiO2] * cs[LiNiO2-7.4keV] * rho[LiNiO2] +
-            #                       + f[LiCoO2] * cs[LiCoO2-7.4keV] * rho[LiCoO2] +
-            #                       + f[LiMnO2] * cs[LiMnO2-7.4keV] * rho[LiMnO2] +
-            mu[xrf_eng] += frac[j] * cs[f'{elem_comp}-{xrf_eng}'] * rho[elem_comp] * scale_ratio
+    # incident x-ray attenuation
+    x_ray_atten = cal_incident_x_ray_atten(frac, param_angle_energy, scale_ratio, dict_use_ref_rotate)
+    # xrf attenuation
+    atten_xrf = cal_xrf_atten(frac, param_angle_energy, detector_offset_angle, scale_ratio, num_cpu)
 
-    #step 1 attenuation of incident X-ray
-    x_ray_atten = np.ones(s)
-    for j in range(1, s[2]):
-        x_ray_atten[:, :, j] = x_ray_atten[:, :, j-1] * np.exp(-mu['x'][:, :, j] * pix)
+    atten_overall = atten_xrf * x_ray_atten  # (xrf + incident xray) attenuation
 
-    #step 2 attenuation of XRF
-
-    # old method
-    '''
-    for i in range(n_type):
-        ele = elem_type[i]
-        print(f'calculating attenuation for {ele}')
-        ts = time.time()
-        sli = np.arange(s[0])
-        atten_tmp = atten_2D_slice_mpi(sli, mu[ele], num_cpu=num_cpu)
-        atten_single_pix[ele] = np.exp(-atten_tmp * pix)
-        te = time.time()
-        print(f'taking {te-ts:3.1f} sec')
-    '''
-
-    # new method (faster)
-    # additional rotation of detector
-    # added on 2024_10_20
-    mu_xrf = rot3D_dict_img(mu, detector_offset_angle)
-    res = xrf_atten(mu_xrf, elem_type, num_cpu)
-    res = rot3D(res, -detector_offset_angle)
-
-    atten_xrf = np.exp(-res * pix) # xrf attenunation
-
-    atten_overall = atten_xrf * x_ray_atten # (xrf + incident xray) attenuation
-    
     # group into elements
     for i, elem in enumerate(elem_type):
-        atten_single_pix[elem] = atten_xrf[i]
+        atten_fl[elem] = atten_xrf[i]
         atten[elem] = atten_overall[i]
-    '''
-    ### including atten_incident x-ray ###
-    # x-ray from left-->right
-    #print('calculating x-ray attenuation')
 
-    x_ray_atten = np.ones(s)
-    for j in range(1, s[2]):
-        x_ray_atten[:, :, j] = x_ray_atten[:, :, j-1] * np.exp(-mu['x'][:, :, j] * pix)
-    for i in range(n_type):
-        ele = elem_type[i]
-        atten[ele] = atten_single_pix[ele] * x_ray_atten
-    '''
-    return atten, atten_single_pix, x_ray_atten
+    return atten, atten_fl, x_ray_atten
 
 
+"""
+# Note: 
+function: "xrf_atten" has been replaced with "cal_xrf_atten"
 def xrf_atten(dict_mu, elem_type, num_cpu=1):
     '''
+    Geometry:
+        Detector is in front of 3D volume (h, r, c), it is at the end of row (r)
+
     mu_all_elem, 4D array, shape = (5, 75, 100, 100)
     num_cpu:
         if 1: run in sequence
@@ -1492,6 +1607,136 @@ def xrf_atten(dict_mu, elem_type, num_cpu=1):
     te = time.time()
     print(te-ts)
     return res
+"""
+
+
+def cal_incident_x_ray_atten(frac_4D, param_angle_energy, scale_ratio=1, dict_use_ref_rotate={}):
+    """
+    img4D: [n_elem, 100, 100, 100]
+
+    Note: incident x-ray is from the "left" side of the 3D volume
+
+    dict_use_ref: parameter determine if use reference spectrum to interpolate absorption cross-section
+        dict_use_ref['use_ref'] = True
+        dict_use_ref['ref_3D'] = (Ni2, Ni3)
+        dict_use_ref['ref_comp'] = 'LiNiO2'
+    """
+    if len(dict_use_ref_rotate) > 0:
+        use_ref = dict_use_ref_rotate['use_ref']
+        ref_3D = dict_use_ref_rotate['ref_3D']
+        ref_comp = dict_use_ref_rotate['ref_comp']
+    else:
+        use_ref = False
+    cs_ = param_angle_energy['cs'].copy()
+    elem_compound = cs_['elem_compound']
+    rho = param_angle_energy['rho']
+    pix = param_angle_energy['pix']
+    frac = frac_4D
+    mu = {'x':0}
+    if use_ref:
+        assert ref_comp is not None, "need to provide 'ref_comp', e.g, 'LiNiO2'"
+        cs_ref = compose_cs_incident_xray_with_reference(ref_3D, cs_, ref_comp)
+        cs_[f'{ref_comp}-x'] = cs_ref # this is a 3D volume of cross-section
+
+    for j, elem_comp in enumerate(elem_compound):
+        # e.g
+        # mu['x'] = mu[8.4 keV] = f[LiNiO2] * cs[LiNiO2-8.4keV] * rho[LiNiO2] +
+        #                       + f[LiCoO2] * cs[LiCoO2-8.4keV] * rho[LiCoO2] +
+        #                       + f[LiMnO2] * cs[LiMnO2-8.4keV] * rho[LiMnO2] +
+        # note if use ref:
+        # cs[LiNiO2-8.4keV] is a 3D volume
+        # cs[LiCoO2-8.4keV] and is cs[LiMnO2-8.4keV] is single value
+        mu['x'] += frac[j] * cs_[f'{elem_comp}-x'] * rho[elem_comp] * scale_ratio
+
+    s = frac_4D[0].shape # (100, 100, 100)
+    x_ray_atten = np.ones(s)
+    for j in range(1, s[2]):
+        # x_ray_atten[:, :, j] = x_ray_atten[:, :, j-1] * np.exp(-mu['x'][:, :, j-1] * pix)
+        # since mu['x'][:, :, j-1] * pix is very small, e.g. for 100nm (1e-5cm)pix, and mu=1000, the value is 0.01
+        # exp(-mu['x'][:, :, j-1] * pix) ~ 1-mu['x'][:, :, j-1] * pix
+        t = mu['x'][:, :, j - 1] * pix
+        x_ray_atten[:, :, j] = x_ray_atten[:, :, j - 1] * (1-t)
+    return x_ray_atten
+
+
+def cal_xrf_atten(frac_4D, param_angle_energy, detector_offset_angle=0, scale_ratio=1, num_cpu=1):
+    '''
+        Geometry:
+            Detector is in front of 3D volume (h, r, c), it is at the end of row (r)
+
+        mu_all_elem, 4D array, shape = (5, 75, 100, 100)
+        num_cpu:
+            if 1: run in sequence
+            if >1: run using mpi
+        '''
+    global mu_all_elem
+
+    cs_ = param_angle_energy['cs'].copy()
+    elem_type = cs_['elem_type'] # 'Ni', 'Co', 'Mn'
+    elem_compound = cs_['elem_compound'] # 'LiNiO2', 'LiCoO2', 'LiMnO2'
+    rho = param_angle_energy['rho']
+    pix = param_angle_energy['pix']
+    frac = frac_4D
+    dict_mu = {}
+    for i, xrf_eng in enumerate(elem_type): # ['Ni', 'Co', 'Mn']
+        dict_mu[xrf_eng] = 0
+        for j, elem_comp in enumerate(elem_compound):
+            # e.g
+            # mu['Ni'] = mu[7.4keV] = f[LiNiO2] * cs[LiNiO2-7.4keV] * rho[LiNiO2] +
+            #                       + f[LiCoO2] * cs[LiCoO2-7.4keV] * rho[LiCoO2] +
+            #                       + f[LiMnO2] * cs[LiMnO2-7.4keV] * rho[LiMnO2] +
+            dict_mu[xrf_eng] += frac[j] * cs_[f'{elem_comp}-{xrf_eng}'] * rho[elem_comp] * scale_ratio
+
+    mu_xrf = rot3D_dict_img(dict_mu, detector_offset_angle)
+    mu_all_elem = pre_treat(list(mu_xrf[k] for k in elem_type))
+    max_num_cpu = round(cpu_count() * 0.8)
+    if num_cpu == 0 or num_cpu > max_num_cpu:
+        num_cpu = max_num_cpu
+    s = mu_all_elem.shape # (5, 75, 100, 100)
+    n_sli = s[1]
+    slices = np.arange(n_sli)
+    print(f'assembling {len(slices)} slices using {num_cpu:2d} CPUs')
+    ts = time.time()
+    #partial_func = partial(atten_2D_slice_all_elem, mu_all_elem=mu_all_elem)
+    partial_func = atten_2D_slice_all_elem
+    pool = Pool(num_cpu)
+    res = []
+    for result in tqdm(pool.imap(func=partial_func, iterable=slices), total=n_sli):
+        res.append(result)
+    pool.close()
+    pool.join()
+    res = np.array(res) # (75, 5, 100, 100)
+    res = np.transpose(res, (1, 0, 2, 3)) # (5, 75, 100, 100)
+    res = rot3D(res, -detector_offset_angle)
+    atten_xrf = np.exp(-res * pix)
+    te = time.time()
+    print(te-ts)
+    return atten_xrf
+
+
+def compose_cs_incident_xray_with_reference(ref_3D, ref_cs, ref_comp):
+    '''
+    ref_3D = (Ni2, Ni3), e.g., Ni2(3).shape=(100, 100, 100)
+    ref_cs.keys = ['LiNiO2-x_ref1', 'LiNiO2-x_ref2', ...]
+    ref_comp = 'LiNiO2'
+
+    ref_cs: e.g., ['LiNiO2-x_ref1', 'LiNiO2-x_ref2']
+        ref_cs['LiNiO2-x_ref1']: a single value, corresponding to the reference cross-section at single x-ray energy
+        Note: 'ref_cs' is adapted from "cs_angle_energy" from function "cal_and_save_atten_prj"
+
+    return:
+    cs_4D: 3D cross-section at all energies, shape = (n_eng, 100, 100, 100)
+    '''
+    n_ref = ref_cs['n_ref']
+    assert len(ref_3D) == n_ref, "number of references and number of 3D stack in 'ref_3D' does not match"
+    ref_spec = np.zeros(n_ref)
+    for i_ref in range(n_ref):
+        ref_spec[i_ref] = ref_cs[f'{ref_comp}-x_ref{i_ref + 1}']
+    ref_frac = cal_frac(ref_3D, scale_range=[])['frac']
+    cs_3D = 0
+    for i_ref in range(n_ref):
+        cs_3D += ref_spec[i_ref] * ref_frac[i_ref]
+    return cs_3D
 
 
 
@@ -1580,10 +1825,11 @@ def smooth_filter(img, filter_size=3):
     return img_s
 
 
-def cal_and_save_atten_prj(param, cs, recon4D, angle_list, ref_prj, fsave='./Angle_prj',
-                           align_flag=0, enable_scale=False, detector_offset_angle=0, num_cpu=8):
+def cal_and_save_atten_prj(param, recon4D, angle_list, ref_prj, fsave='./Angle_prj',
+                           align_flag=0, enable_scale=False, detector_offset_angle=0,
+                           dict_use_ref={}, num_cpu=8):
     '''
-    Function used to calcuate the attenuation coefficents of each elements and all 3D voxels
+    Function used to calcuate the attenuation coefficent of each element and all 3D voxels
     results will be saved into the "fsave" folder
 
     If align_flag = 1:
@@ -1594,80 +1840,104 @@ def cal_and_save_atten_prj(param, cs, recon4D, angle_list, ref_prj, fsave='./Ang
         it will simply copy the raw projection image into the folder, which assuming the raw projection images
         is well alinged with rotation center locted at image center.
 
-    '''
+    dict_use_ref = {}
+        dict_use_ref['use_ref'] = True
+        dict_use_ref['ref_comp'] = 'LiNiO2'
+        dict_use_ref['ref_3D'] = (Ni2, Ni3)
+        If use_ref = True:
+            need to provide ref_3D:
+                e.g., ref_3D = pre_treat(Ni2, Ni3), Ni2(3): concentration of Ni2+ and Ni3+, shape = (100, 100, 100)
+            need to provide ref_comp:
+                e.g., 'LiNiO2', should be one of the compound listed in param['elem_compound']
+            assume cs has keys of ['LiNiO2-x_ref1', 'LiNiO2-x_ref2', ...'
 
+            it will re-calculate the absorption cross-section (cs) according to ['LiNiO2-x_ref1', 'LiNiO2-x_ref2']
+            it generate a 4D cross-section e.g., (n_energy, 100, 100, 100)
+    '''
+    if ref_prj is None:
+        write_prj = False
+    else:
+        write_prj = True
     s = recon4D.shape
 
     elem_type = param['elem_type']
     elem_comp = param['elem_compound']
     # updated on 12/11/2024
     # in case incident x-ray energy changes with rotation angle
-    cs_angle_energy = cs.copy()
-    cs_angle_energy_type = type(cs_angle_energy[f'{elem_comp[0]}-x'])
+
+    param_angle_energy = param.copy()
+
 
 
     Nelem = len(elem_type)
     n_angle = len(angle_list)
-    prj = np.zeros([Nelem, n_angle, s[1], s[3]])
-    ref_prj_sum = np.sum(ref_prj, axis=0)
+    if write_prj:
+        prj = np.zeros([Nelem, n_angle, s[1], s[3]])
+        ref_prj_sum = np.sum(ref_prj, axis=0)
     for ang_id in range(n_angle):
         print(f'\ncalculate and save attenuation and projection at angle {angle_list[ang_id]}: {ang_id+1}/{n_angle}')
 
-        if cs_angle_energy_type is np.ndarray or list:
-            for ele_comp in elem_comp:
-                cs_angle_energy[f'{ele_comp}-x'] = cs[f'{ele_comp}-x'][ang_id]
-        '''
-        res = cal_atten_prj_at_angle(angle_list[ang_id], recon4D, param, cs, position_det='r',
-                                     enable_scale=enable_scale, detector_offset_angle=detector_offset_angle, num_cpu=num_cpu)
-        '''
-        res = cal_atten_prj_at_angle(angle_list[ang_id], recon4D, param, cs_angle_energy, position_det='r',
+        param_angle_energy = extract_single_value_param(param, ang_id, dict_use_ref)
+
+        res = cal_atten_prj_at_angle(angle_list[ang_id], recon4D, param_angle_energy, position_det='r',
                                      enable_scale=enable_scale, detector_offset_angle=detector_offset_angle,
-                                     num_cpu=num_cpu)
+                                     dict_use_ref=dict_use_ref, num_cpu=num_cpu)
 
         if align_flag:
             _, r, c = align_img(res['prj_sum'], ref_prj_sum[ang_id])     
             print(f'shift projection image at angle={angle_list[ang_id]}: {r}, {c}')   
         for i in range(Nelem):
             elem = elem_type[i]
-            if align_flag:
-                #prj[i, ang_id],r,c = align_img(res['prj'][elem], ref_prj[i, ang_id])
-                #print(f'align {elem} at angle={angle_list[ang_id]}: {r}, {c}')
-                prj[i, ang_id] = ndimage.shift(ref_prj[i, ang_id], [r, c])
-                
-            else:
-                prj[i, ang_id] = ref_prj[i, ang_id]
-            write_projection('m', elem, prj[i, ang_id], angle_list[ang_id], ang_id, fsave)
-            write_attenuation(elem, res['atten'][elem], angle_list[ang_id], ang_id, fsave)
-
+            if write_prj:
+                if align_flag:
+                    prj[i, ang_id] = ndimage.shift(ref_prj[i, ang_id], [r, c])
+                else:
+                    prj[i, ang_id] = ref_prj[i, ang_id]
+                write_projection('m', elem, prj[i, ang_id], angle_list[ang_id], ang_id, fsave)
+            write_attenuation(elem, res['atten'][elem], ang_id, fsave)
             # write fluorecent attenuantion
-            write_attenuation_fl(elem, res['atten_fl'][elem], angle_list[ang_id], ang_id, fsave)
-
+            write_attenuation_fl(elem, res['atten_fl'][elem], ang_id, fsave)
             # write incident xray attenuantion
-            write_attenuation_xray(elem, res['atten_xray'][elem], angle_list[ang_id], ang_id, fsave)
+            write_attenuation_xray(elem, res['atten_xray'][elem], ang_id, fsave)
 
-def cal_atten_prj_at_angle(angle, img4D, param, cs, position_det='r', enable_scale=False,
-                           detector_offset_angle=0, num_cpu=8):
+
+def cal_atten_prj_at_angle(current_angle, img4D, param_angle_energy, position_det='r', enable_scale=False,
+                           detector_offset_angle=0, dict_use_ref={}, num_cpu=8):
     '''
     calculate the attenuation and projection at single angle
     '''
-    elem_type = cs['elem_type']
-    s = img4D.shape
+
+    elem_type = param_angle_energy['elem_type']
     n_type = len(elem_type)
-    img4D_r = rot3D(img4D, angle)
+    img4D_r = rot3D(img4D, current_angle)
     prj = {}
     prj_sum = 0
-    atten, atten_fl, atten_xray = cal_atten_with_direction(img4D_r, cs, param, position_det='r', enable_scale=enable_scale,
-                                     detector_offset_angle=detector_offset_angle, num_cpu=num_cpu)
+
+    dict_use_ref_rotate = dict_use_ref.copy()
+    # need to rotate dict_use_ref['ref_3D']
+    if len(dict_use_ref) > 0:
+        if dict_use_ref['use_ref']:
+            ref_3D = dict_use_ref['ref_3D']
+            n_ref = len(ref_3D)
+            for i in range(n_ref):
+                dict_use_ref_rotate['ref_3D'][i] = rot3D(ref_3D[i], current_angle)
+
+
+    atten3D, atten3D_fl, atten3D_xray = cal_atten_with_direction(img4D_r, param_angle_energy, position_det=position_det,
+                                                           enable_scale=enable_scale,
+                                                           detector_offset_angle=detector_offset_angle,
+                                                           dict_use_ref_rotate=dict_use_ref_rotate,
+                                                           num_cpu=num_cpu)
     for j in range(n_type):
         ele = elem_type[j]
-        prj[ele] = np.sum(img4D_r[j]*atten[ele], axis=1)
+        prj[ele] = np.sum(img4D_r[j]*atten3D[ele], axis=1)
         prj_sum = prj_sum + prj[ele]
     res = {}
-    res['atten'] = atten
+    res['atten'] = atten3D
     res['prj'] = prj
     res['prj_sum'] = prj_sum
-    res['atten_fl'] = atten_fl
-    res['atten_xray'] = atten_xray
+    res['atten_fl'] = atten3D_fl
+    res['atten_xray'] = atten3D_xray
     return res
 
 
@@ -1741,13 +2011,14 @@ def absorption_correction(sli_id, elem, ref_tomo, angle_list, fpath_atten, n_ite
 
 
 
-def cuda_generate_H_single_slice(atten_sli, angle_list, H0=None, H_tot=None):
+def cuda_generate_H_single_slice(atten_sli, angle_list, H0=None, H_tot=None,
+                                 blocks_2D=(16, 16), threads_2D=(16, 16)):
     '''
     using numba.cuda
     return H_tot as cuda_array
     '''
-    blocks_2D = (16, 16)
-    threads_2D = (16, 16) 
+    #blocks_2D = (16, 16)
+    #threads_2D = (16, 16)
     theta = angle_list / 180. * np.pi
     s = atten_sli.shape # e.g, (53, 400, 400) --> 53 angles
     tomo_shape = (1, *s[1:])
@@ -1897,5 +2168,25 @@ def get_attenuation_length_K_edge(elem='Ni', compound='LiNiO2', rho=4.65):
     atten_length = 1.0 / jump / rho
     return atten_length
 
+def read_and_rescale_atten_coef(proj_raw, fn_root, current_iter_id, elem_type, prj_prefix='Angle_prj', scale_factor=2):
+    fn_read_folder = fn_root + f'/{prj_prefix}_{current_iter_id:02d}'
+    fn_save_folder = fn_root + f'/{prj_prefix}_{-current_iter_id:02d}'
+    tmp = np.sort(glob.glob(fn_read_folder + f'/atten_fl_{elem_type[0]}_prj*'))
+    n_angle = len(tmp)
+    b = scale_factor
+    for elem_id, elem in enumerate(elem_type):
+        for i in trange(n_angle):
+            coef_att = read_attenuation(i, fn_read_folder, elem)
+            coef_scale = rescale(coef_att, b)
+            write_attenuation(elem, coef_scale, i, fn_save_folder)
 
+            coef_fl = read_attenuation_fl(i, fn_read_folder, elem)
+            coef_fl_scale = rescale(coef_fl, b)
+            write_attenuation_fl(elem, coef_fl_scale, i, fn_save_folder)
+
+            coef_xray = read_attenuation_xray(i, fn_read_folder, elem)
+            coef_xray_scale = rescale(coef_xray, b)
+            write_attenuation_xray(elem, coef_xray_scale, i, fn_save_folder)
+
+            write_projection('m', elem, proj_raw[elem_id, i], i, i, fn_save_folder)
 ##

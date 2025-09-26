@@ -5,6 +5,7 @@ from scipy.signal import medfilt2d
 from skimage.restoration import denoise_nl_means, estimate_sigma
 from skimage.transform import resize
 from skimage.filters import threshold_otsu, threshold_yen, threshold_multiotsu
+from skimage.filters import gaussian as gf
 from multiprocessing import Pool, cpu_count
 from pystackreg import StackReg
 from tqdm import tqdm, trange
@@ -159,7 +160,7 @@ def rot3D_dict_img(img_dict, rot_angle):
     return dict_rot
 
 
-def rot3D(img_raw, rot_angle, order=3):
+def rot3D(img_raw, rot_angle, order=1):
 
     """
     Rotate 2D or 3D or 4D(set of 3D) image with angle = rot_angle
@@ -179,7 +180,7 @@ def rot3D(img_raw, rot_angle, order=3):
 
     """
 
-    img = np.array(img_raw)
+    img = np.array(img_raw, dtype=np.float32)
     img = rm_nan(img)
     if rot_angle == 0:
         return img
@@ -488,15 +489,35 @@ def rm_noise(img, noise_level=2e-3, filter_size=3):
 
 def rm_noise2(img, noise_level=0.02, filter_size=3):
     img_s = medfilt2d(img, filter_size)
-    id0 = img_s==0
+    id0 = img==0
     img_s[id0] = img[id0]
-    img_diff = (img - img_s) / img
+    img_diff = np.abs((img - img_s) / img)
     index = img_diff > noise_level
     img_m = img.copy()
     img_m[index] = img_s[index]
     return img_m
-    
-    
+
+
+def rm_noise2_stack(img_stack, noise_level=0.02, filter_size=3):
+    s = img_stack.shape
+    img1 = img_stack.copy()
+    if len(s) == 3: # 3D stack
+        for i in range(s[0]):
+            img = img_stack[i]
+            img_s = medfilt2d(img, filter_size)
+            id0 = img == 0
+            img_s[id0] = img[id0]
+            img_diff = (img - img_s) / img
+            index = img_diff > noise_level
+            img_m = img.copy()
+            img_m[index] = img_s[index]
+            img1[i] = img_m
+    if len(s) == 4:
+        for i in trange(s[0]):
+            img1[i] = rm_noise2_stack(img_stack[i], noise_level, filter_size)
+    return img1
+
+
 def img_denoise_bm3d(img, sigma=0.01):
     try:
         import bm3d
@@ -743,3 +764,10 @@ def plot3D(data, axis=0, index_init=None, clim=[], cmap='rainbow'):
     im_slider.on_changed(update)
     plt.show()
     return im_slider 
+
+
+def add_blur_noise_to_img(img, gaussian_kernel=1.5, poisson_counts=[10000]):
+    img_a = np.random.poisson(img*poisson_counts[0])/poisson_counts[0]
+    img_b = gf(img_a, gaussian_kernel)
+    img_c = np.random.poisson(img_b*poisson_counts[-1])/poisson_counts[-1]
+    return img_c
