@@ -2171,13 +2171,15 @@ def get_attenuation_length_K_edge(elem='Ni', compound='LiNiO2', rho=4.65):
 
 def read_and_rescale_atten_coef(proj_raw, fn_root, current_iter_id, elem_type, prj_prefix='Angle_prj', scale_factor=2, add_n_pix=[0,0,0]):
     fn_read_folder = fn_root + f'/{prj_prefix}_{current_iter_id:02d}'
-    fn_save_folder = fn_root + f'/{prj_prefix}_{-current_iter_id:02d}'
+    fn_save_folder = fn_root + f'/{prj_prefix}_-{current_iter_id:02d}'
     tmp = np.sort(glob.glob(fn_read_folder + f'/atten_fl_{elem_type[0]}_prj*'))
     n_angle = len(tmp)
     b = scale_factor
     for elem_id, elem in enumerate(elem_type):
         for i in trange(n_angle):
             coef_att = read_attenuation(i, fn_read_folder, elem)
+            s = coef_att.shape
+            s_new = s * b
             coef_scale = rescale(coef_att, b)
             coef_scale = pad_matrix_lines(coef_scale, add_n_pix)
             write_attenuation(elem, coef_scale, i, fn_save_folder)
