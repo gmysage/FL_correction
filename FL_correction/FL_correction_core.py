@@ -22,6 +22,12 @@ from skimage.transform import rescale
 import warnings
 warnings.filterwarnings('ignore')
 
+try:
+    import torch
+    torch_available = True
+except:
+    torch_available = False
+
 global mask3D
 
 def load_global_mask(Mask3D):
@@ -105,6 +111,28 @@ def mlem_matrix(img2D, p, y, n_iter=10):
     img_cor = np.reshape(A_new, img2D.shape)
     return img_cor
 
+def torch_mlem(img2D, p, y, n_iter):
+    if not torch_available:
+        print('torch is not found')
+        return 0
+    #img2D = torch.tensor(img2D, dtype=torch.float)
+    A_new = img2D.flatten()
+    A_new = A_new.reshape((len(A_new), 1))
+    b_sum = torch.sum(p, axis=0, keepdim=True)
+
+    if len(y.shape) == 1:
+        y = y.reshape((len(y), 1))
+    for _ in trange(n_iter):
+        Pf = torch.matmul(p, A_new)
+        Pf = Pf.reshape((len(Pf), 1))
+        Pf[Pf < 1e-6] = 1
+        t1 = p
+        t2 = y / Pf
+        a_sum = t2.T @ t1
+        A_new = A_new * (a_sum / b_sum).T
+        A_new[torch.isnan(A_new)] = 0
+    img_cor = A_new.reshape(img2D.shape)
+    return img_cor
 
 def row_sum(p):
     s = p.shape
@@ -992,7 +1020,8 @@ def generate_H_from_atten_coef(atten_list, theta_list):
                 p = row
                 q = col
                 cord = np.dot(T,[[p-cx],[q-cy]]) + [[cx],[cy]]
-                if ((cord[0] > s[1]-1) or (cord[0] <= 0) or (cord[1] > s[2]-1) or (cord[1] <= 0)):    continue
+                if ((cord[0] > s[1]-1) or (cord[0] < 0) or (cord[1] > s[2]-1) or (cord[1] < 0)):
+                    continue
                 r_frac = cord[0] - np.floor(cord[0])
                 c_frac = cord[1] - np.floor(cord[1])
                 r_up = int(np.floor(cord[0]))
@@ -1098,17 +1127,19 @@ def scale_expand_H_with_emission_coef(H_tot, em_cs_ref):
     s = em_cs_ref.shape
     n_angle = s[0]
     n_ref = s[1]
-
-    s0 = H_tot.shape # e.g., (60x80, 80x80) --> image size = (80,80), n_angle=60
-    n_pix = int(np.sqrt(s0[1])) # 80
-    H_comb = np.zeros((s0[0], s0[1]*n_ref))
-    for i in range(n_angle):
-        rs = i * n_pix
-        re = (i + 1) * n_pix
-        for j in range(n_ref):
-            cs = j * s0[1]
-            ce = (j + 1) * s0[1]
-            H_comb[rs:re, cs:ce] = H_tot[rs:re] * em_cs_ref[i, j]
+    if n_angle==1 and n_ref==1: # a single value of em_cs_ref:
+        H_comb = H_tot * em_cs_ref
+    else:
+        s0 = H_tot.shape # e.g., (60x80, 80x80) --> image size = (80,80), n_angle=60
+        n_pix = int(np.sqrt(s0[1])) # 80
+        H_comb = np.zeros((s0[0], s0[1]*n_ref))
+        for i in range(n_angle):
+            rs = i * n_pix
+            re = (i + 1) * n_pix
+            for j in range(n_ref):
+                cs = j * s0[1]
+                ce = (j + 1) * s0[1]
+                H_comb[rs:re, cs:ce] = H_tot[rs:re] * em_cs_ref[i, j]
     return H_comb
 
 
@@ -1766,12 +1797,17 @@ def generate_H_jit(tomo3D_shape, theta, atten3D, H_tot, H_zero):
     2D array
     """
 
+    # s = tomo3D_shape e.g., (200, 200, 200)
     # theta = np.array(angle_list / 180 * np.pi)
+    # num = len(theta)
+    # H_tot.shape = (n * s[2], s[1] * s[2])
+    # H_zero.shape = (s[2], s[1] * s[2])
     num = len(theta)
     s = tomo3D_shape
     cx = (s[2]-1) / 2.0       # center of col
     cy = (s[1]-1) / 2.0       # center of row
     #H_tot = np.zeros([s[2]*num, s[2]*s[2]])
+    H = H_zero.copy()
     for i in prange(num):
         att = atten3D[i]
         #T = np.array([[np.cos(-theta[i]), -np.sin(-theta[i])],[np.sin(-theta[i]), np.cos(-theta[i])]])
@@ -1779,7 +1815,7 @@ def generate_H_jit(tomo3D_shape, theta, atten3D, H_tot, H_zero):
         T01 = -np.sin(-theta[i])
         T10 = np.sin(-theta[i])
         T11 = np.cos(-theta[i])
-        H = H_zero.copy()
+        H = H * 0
         for col in range(s[2]):
             for row in range(s[1]):
                 p = row
@@ -1788,7 +1824,7 @@ def generate_H_jit(tomo3D_shape, theta, atten3D, H_tot, H_zero):
                 t0 = T00 * (p-cx) + T01 * (q-cy) + cx
                 t1 = T10 * (p-cx) + T11 * (q-cy) + cy
                 cord = [t0, t1]
-                if ((cord[0] > s[1]-1) or (cord[0] <= 0) or (cord[1] > s[2]-1) or (cord[1] <= 0)):
+                if ((cord[0] > s[1]-1) or (cord[0] < 0) or (cord[1] > s[2]-1) or (cord[1] < 0)):
                     continue
                 
                 r_frac = cord[0] - np.floor(cord[0])
@@ -2176,6 +2212,7 @@ def read_and_rescale_atten_coef(proj_raw, fn_root, current_iter_id, elem_type, p
     n_angle = len(tmp)
     b = scale_factor
     for elem_id, elem in enumerate(elem_type):
+        print(f'processing {elem} ... ')
         for i in trange(n_angle):
             coef_att = read_attenuation(i, fn_read_folder, elem)
             s = coef_att.shape

@@ -207,10 +207,11 @@ def compose_cs(compound, x_eng):
 
 def extract_em_cs_with_reference(param, elem, use_ref=True):
     em_cs = param['em_cs']
-    n_ref = em_cs['n_ref']
+
     eng_list = param['eng_list']
     n_eng = len(eng_list)
     if use_ref:
+        n_ref = em_cs['n_ref']
         try:
             em_cs_ref = np.zeros((n_eng, n_ref))
             for i in range(n_ref):
