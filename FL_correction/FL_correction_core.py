@@ -1791,7 +1791,6 @@ def generate_H_jit(tomo3D_shape, theta, atten3D, H_tot, H_zero):
     theta: 1d array
         rotation angles in unit of radius
 
-
     Returns:
     --------
     2D array
@@ -1807,7 +1806,8 @@ def generate_H_jit(tomo3D_shape, theta, atten3D, H_tot, H_zero):
     cx = (s[2]-1) / 2.0       # center of col
     cy = (s[1]-1) / 2.0       # center of row
     #H_tot = np.zeros([s[2]*num, s[2]*s[2]])
-    H = H_zero.copy()
+    H = H_zero * 0
+    H_tot = H_tot * 0
     for i in prange(num):
         att = atten3D[i]
         #T = np.array([[np.cos(-theta[i]), -np.sin(-theta[i])],[np.sin(-theta[i]), np.cos(-theta[i])]])

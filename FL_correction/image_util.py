@@ -10,6 +10,7 @@ from multiprocessing import Pool, cpu_count
 from pystackreg import StackReg
 from tqdm import tqdm, trange
 from functools import partial
+import bm3d
 
 
 def pad4d(img_stack, thick=0, direction=0):
@@ -534,6 +535,32 @@ def img_denoise_bm3d(img, sigma=0.01):
     except Exception as err:
         print(err)
         return img
+
+def img_denoise_bm3d_single(img, sigma=0.1):
+    # img.shape =(100, 100)
+    try:
+        #import bm3d
+        img_d = bm3d.bm3d(img, sigma_psd=sigma, stage_arg=bm3d.BM3DStages.HARD_THRESHOLDING)
+        return img_d
+    except Exception as err:
+        print(err)
+        return img
+
+
+def img_denoise_bm3d_mpi(img, sigma=0.1, n_cpu=8):
+    max_cpu = round(cpu_count() * 0.8)
+    n_cpu = min(n_cpu, max_cpu)
+    n_cpu = max(n_cpu, 1)
+    s = img.shape
+    pool = Pool(n_cpu)
+    res = []
+    partial_func = partial(img_denoise_bm3d_single, sigma=sigma)
+    for result in tqdm(pool.imap(func=partial_func, iterable=img), total=len(img)):
+        res.append(result)
+    pool.close()
+    pool.join()
+    img_d = np.array(res)
+    return img_d
 
 
 def img_denoise_nl_single(img, patch_size=5, patch_distance=6):

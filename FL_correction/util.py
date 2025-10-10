@@ -38,6 +38,36 @@ def interp_line(x0, y0, x_interp, k=1):
     y_interp = f(x_interp)
     return y_interp
 
+def load_recon(fn_recon, max_iter=10):
+    if fn_recon[-1] == '/':
+        fn_recon = fn_recon[:-1]
+    fn_list = np.sort(glob.glob(fn_recon + '/*'))
+    recon = {}
+    for i in range(max_iter):
+        recon[i] = {'sum':0}
+    n_iter = 0
+    for fn in fn_list:
+        fn_short = fn.split('/')[-1]
+        tmp = fn_short.split('_')
+        ele = tmp[1]
+        it = int(tmp[-1].split('.')[0])
+        recon[it][ele] = io.imread(fn)
+        if it > n_iter:
+            n_iter = it
+    n_iter += 1
+    for i in range(n_iter):
+        keys = list(recon[i].keys()) # 'Ni', 'Co', 'Mn', 'sum'
+        for k in keys:
+            if k == 'sum':
+                continue
+            try:
+                t = int(t[-1]) #'Ni2' will return True, 'Ni' will raise exception
+                continue
+            except:
+                recon[i]['sum'] += recon[i][k]
+    return recon, n_iter
+
+
 def read_attenuation(angle_id, fpath_atten, elem):
     #fpath_atten = fn_root + f'/Angle_prj_{iter_id}'
     fn_att = fpath_atten + f'/atten_{elem}_prj_{angle_id:04d}.tiff'
