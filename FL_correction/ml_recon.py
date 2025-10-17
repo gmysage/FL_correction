@@ -379,5 +379,91 @@ def FL_tomo_recon(guess_ini, sino_sli, angle_list, em_cs_ref, rho_compound_2D, p
     # guess = guess.detach().cpu().numpy().squeeze()
     return loss_his, guess_new, sino_out
 
+def FL_tomo_xanes_2ref(guess_ini, sino_sli, angle_list, em_cs_ref,
+                   rho_compound_2D, pix, atten2D_at_angle, loss_r, img_sum,
+                   lr=1e-3, n_epoch=50, device='cuda'):
+    """
+    guess_ini:
+        xanes: (2, 128, 128)
+        regular tomo: (1, 128, 128)
+    sino_sli:
+        sino of "ground truth", e.g., experimental data, (n_angle, 1, 128)
+    angle_list:
+        [degrees]
+    em_cs_ref:
+        emission cross-section of references,
+        for xanes: (n_angles, n_ref) [e.g., (60, 2)]
+        regular tomo: (n_angles,) [e.g, (60,)]
+    rho_compound_2D:
+        mass density of material [g/cm3] (128, 128)
+    img_sum:
+        constrains: e.g., guess_ini[0] + guess[1] = img_sum
+    pix:
+        pixel size [cm]
+    atten2D_at_angle:
+        attenuation of x-ray and xrf
+        (n_angles, 128, 128) e.g., (60, 128, 128), or
+        (n_angles,), or
+        1 (without attenuation)
+    loss_r:
+        dictionary
+    lr: learning rate
 
+    """
+    s = em_cs_ref.shape
+    if len(s) == 2:
+        n_ref = em_cs_ref.shape[-1]
+    else:
+        n_ref = 1
+    keys = list(loss_r.keys())
+    loss_his = {}
+    loss_val = {}
+    for k in keys:
+        loss_his[k] = {'value': [], 'rate': loss_r[k]}
+    loss_his['img_diff'] = {'value': [], 'rate': 1}
+
+    #guess_ini = guess_ini[:, np.newaxis]
+    #guess = torch.tensor(guess_ini, dtype=torch.float32).to(device).requires_grad_(True)
+    guess = convert_to_4D_tensor(guess_ini, device).requires_grad_(True)
+    img_sum = convert_to_4D_tensor(img_sum, device)
+    model_obj_lr = [{"params": guess, "lr": lr}]
+    lr_para = {"betas": (0.9, 0.999), "amsgrad": False}
+    optimizer = torch.optim.Adam(model_obj_lr, **lr_para)
+
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.8, patience=5, threshold=1e-16,
+                                  threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-12)
+
+    sino_sum_gt_cuda = convert_to_4D_tensor(sino_sli, device)
+    guess_old = 0
+    for epoch in trange(n_epoch):
+        optimizer.zero_grad()
+        sino_out = FL_forward(guess, angle_list, n_ref, rho_compound_2D, em_cs_ref, pix, atten2D_at_angle, device)
+        sino_dif = sino_out - sino_sum_gt_cuda
+        img_sum_out = torch.sum(guess, axis=0, keepdim=True)
+        loss_val['mse'] = torch.square(sino_dif).mean()
+        loss_val['tv_sino'] = tv_loss_norm(sino_dif)
+        loss_val['tv_img'] = tv_loss_norm(guess)
+        loss_val['l1_sino'] = l1_loss(sino_sum_gt_cuda, sino_out)
+        loss_val['likelihood_sino'] = poisson_likelihood_loss(sino_out, sino_sum_gt_cuda)
+        loss_val['img_sum'] = torch.square(img_sum_out - img_sum).mean()
+
+        loss = 0.0
+        for k in keys:
+            loss_his[k]['value'].append(loss_val[k].item())
+            if loss_r[k] > 0:
+                if k == 'mse_sum':
+                    if epoch < 20:
+                        continue
+                loss = loss + loss_val[k] * loss_r[k]
+
+        loss.backward()
+        optimizer.step()
+        scheduler.step(loss)
+
+        guess_new = guess.detach().cpu().numpy().squeeze()
+        loss_his['img_diff']['value'].append(np.abs(np.mean(guess_new - guess_old)))
+        guess_old = guess_new
+    sino_out = sino_out.detach().cpu().numpy()
+    # guess = guess.detach().cpu().numpy().squeeze()
+    return loss_his, guess_new, sino_out
 

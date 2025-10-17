@@ -134,6 +134,47 @@ def torch_mlem(img2D, p, y, n_iter):
     img_cor = A_new.reshape(img2D.shape)
     return img_cor
 
+
+def torch_wpb_recon(img2D_torch, H, I, n_iter):
+    s = img2D_torch.shape  # (80, 80)
+    s_H = H.shape  # (4800, 6400)
+    if torch.max(img2D_torch) == 0:
+        C = torch.ones((s[0] * s[1], 1))
+    else:
+        C = img2D_torch.flatten()
+        C = C.reshape((len(C), 1))  # (6400, 1)
+    I = I.reshape((len(I), 1))  # e.g. (4800, 1)
+    W = H.clone()
+    C_new = C.clone()
+
+    for i in trange(n_iter):
+        COR = 0
+        HC = H @ C_new  # (4800, 1)
+        I_err = I - HC
+        W = W * C_new.T
+        '''    
+        ### this is equivalent to W = W * C.T
+        for r in range(s_H[0]):
+            W[r] = W[r] * C[:, 0]
+        '''
+        ratio = I_err / torch.sum(W, axis=1, keepdim=True)
+        ratio[torch.isnan(ratio)] = 0
+        for r in range(s_H[0]):
+            # cor = W[r] * I_err[r] / torch.sum(W[r])
+            cor = W[r] * ratio[r]
+            # cor[torch.isnan(cor)] = 0
+            cor = cor.reshape((len(cor), 1))
+            COR += cor
+        C_new = COR + C_new
+
+        C_new[C_new < 0] = 0
+        # C[torch.isnan(C)] = 0
+    img_new = C_new.reshape(s).cpu().numpy()
+    plt.figure();
+    plt.imshow(img_new);
+    plt.title(f'n_iter={n_iter}')
+    return img_new
+
 def row_sum(p):
     s = p.shape
     m = np.ones((1, s[0]))
@@ -1416,7 +1457,7 @@ def atten_2D_row_mpi(row, mu_ele, display_flag=True, num_cpu=4):
     return res
 
 
-def cal_frac(*args, scale_range=[0.1, 0.9]):
+def cal_frac(*args, scale_range=[0.02, 0.98], enable_scale=True, scale_limit=0.95):
     if len(args) == 1:
         img = args[0].copy()
         s = img.shape
@@ -1433,18 +1474,21 @@ def cal_frac(*args, scale_range=[0.1, 0.9]):
     sum_sort = np.sort(img_sum[img], axis=None)
     pix_max = sum_sort[int(0.95*len(sum_sort))]
     '''
-    pix_max = np.max(img_sum)       
-    #img_mask = img_sum > (pix_max)*1e-2
-    img_mask = adaptive_threshold(img_sum, fill_hole=True, dilation=1)
+
+    img_mask = adaptive_threshold(img_sum, fill_hole=True, dilation=2)
     if np.max(img_mask) == 0: # fails in adaptive_threshold
         img_mask = 1
     img_sum =  img_sum * img_mask
+    sum_sort = np.sort(img_sum[img_sum > 0])
+    if enable_scale:
+        try:
+            l = len(sum_sort)
+            pix_max_update = np.median(sum_sort[int(l*scale_limit)])
+            ratio = img_sum / pix_max_update
+        except:
+            pix_max_update = sum_sort[-1]
+            ratio = 1
 
-    sum_sort = np.sort(img_sum[img_sum>(pix_max)*0.1])
-    try:
-        pix_max_update = sum_sort[int(0.95*len(sum_sort))]
-    except:
-        pix_max_update = sum_sort[-1]
     pix_median = np.median(sum_sort)
 
     for i in range(n):
@@ -1456,7 +1500,8 @@ def cal_frac(*args, scale_range=[0.1, 0.9]):
                 tmp_sort = tmp_sort[int(l*scale_range[0]):int(l*scale_range[1])]
                 tmp[tmp >= tmp_sort[-1]] = tmp_sort[-1]
                 tmp[tmp <= tmp_sort[0]] = tmp_sort[0]
-        frac[i] = tmp * img_mask
+        frac[i] = tmp * img_mask * ratio
+
     res = {}
     res['img_sum'] = img_sum
     res['frac'] = frac
@@ -1573,7 +1618,8 @@ def cal_atten_3D(img4D_r, param_angle_energy, enable_scale=False,
     """
 
     elem_type = param_angle_energy['elem_type']
-    res = cal_frac(img4D_r, scale_range=[0.1, 0.9])
+    #res = cal_frac(img4D_r, scale_range=[0.1, 0.9])
+    res = cal_frac(img4D_r, scale_range=[0.02, 0.98], enable_scale=True, scale_limit=0.95)
     img_sum = res['img_sum']
     pix_max = res['pix_max']
     frac = res['frac']
@@ -1686,7 +1732,9 @@ def cal_incident_x_ray_atten(frac_4D, param_angle_energy, scale_ratio=1, dict_us
         # x_ray_atten[:, :, j] = x_ray_atten[:, :, j-1] * np.exp(-mu['x'][:, :, j-1] * pix)
         # since mu['x'][:, :, j-1] * pix is very small, e.g. for 100nm (1e-5cm)pix, and mu=1000, the value is 0.01
         # exp(-mu['x'][:, :, j-1] * pix) ~ 1-mu['x'][:, :, j-1] * pix
+
         t = mu['x'][:, :, j - 1] * pix
+        #t = np.exp(-mu['x'][:, :, j-1] * pix)
         x_ray_atten[:, :, j] = x_ray_atten[:, :, j - 1] * (1-t)
     return x_ray_atten
 
