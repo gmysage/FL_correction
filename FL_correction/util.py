@@ -479,7 +479,7 @@ def fit_gauss(x, y, x_mean=None):
     if len(y) - len(x) == 1:
         y = (y[1:] + y[:-1]) / 2
     if x_mean is None:
-        t = x[y>0.005*np.max(y)]
+        t = x[y>0.002*np.max(y)]
         x_mean = np.mean(t)
     else:
         x_mean = np.mean(x)

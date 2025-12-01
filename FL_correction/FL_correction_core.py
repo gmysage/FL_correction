@@ -179,7 +179,7 @@ def torch_mlem_recon(sino_prj, angle_list, n_mlem_iter=200,
     H_tot = np.zeros((n_angle * s2[-1], s2[-1] * s2[-1]))
     H_zero = np.zeros((s2[-1], s2[-1] * s2[-1]))
 
-    H = generate_H_jit(s3, theta_list, atten, H_tot, H_zero) # use update attenuation from ML recon
+    H = generate_H_jit((1, *s2), theta_list, atten, H_tot, H_zero) # use update attenuation from ML recon
     H_comb = scale_expand_H_with_emission_coef(H, em_cs_ele)
     H_comb = H_comb * rho * pix
     rec = np.zeros(s3)
