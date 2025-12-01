@@ -4,10 +4,12 @@ from tqdm import trange
 import torch.nn as nn
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+import torchvision
+from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
 from torch.autograd import Variable
+import torch.optim as optim
 
 #from examples.HXN_sparse_tomo.data_process import sino_Ni_sli
-
 
 def tv_loss_norm(c):
     n = torch.numel(c)
@@ -55,8 +57,8 @@ def rot_img(img, theta, device='cpu', dtype=torch.float32):
     '''
     if not isinstance(img, torch.Tensor):
         img = torch.tensor(img)
-    img = img.to(dtype)
-    img = img.to(device)
+    img = img#.to(dtype)
+    img = img#.to(device)
     rot_mat = get_rot_mat(theta)[None, ...].type(dtype).repeat(img.shape[0],1,1).to(device)
     grid = F.affine_grid(rot_mat, img.size(), align_corners=False).type(dtype).to(device)
     img_r = F.grid_sample(img, grid, align_corners=False)
@@ -192,15 +194,17 @@ def convert_to_4D_tensor(img, device):
     e.g., (128, 128) -->(1, 1, 128, 128)
     e.g., (4, 128, 128) --> (4, 1, 128, 128)
     """
+    if not torch.is_tensor(img):
+        img = torch.tensor(img, dtype=torch.float32)
+    else:
+        img = img.to(torch.float32)
     s = img.shape # e.g. (4, 128, 128): 4 components (references), or (128, 128) for regular image
     if len(s) == 2:
-        img_c = img.reshape((1, 1, *s))
+        img = img.reshape((1, 1, *s))
     elif len(s) == 3:
-        img_c = img.reshape((s[0], 1, *s[1:]))
-    else:
-        img_c = img
-    img_cuda = torch.tensor(img_c, dtype=torch.float32).to(device)
-    return img_cuda
+        img = img.reshape((s[0], 1, *s[1:]))
+    img = img.to(device)
+    return img
 
 def plot_img(img, sli=0, return_flag=False):
     im = img
@@ -232,10 +236,10 @@ def plot_loss(h_loss):
             k = keys[idx]
             try:
                 rate = np.array(h_loss[k]['rate'])
-                rate[rate==0] = 1
+                # rate[rate==0] = 1
                 val = np.array(h_loss[k]['value'])
-                val_scale = val / rate
-                axes[r, c].plot(val_scale, '-', label=k)
+                # val_scale = val / rate
+                axes[r, c].plot(val, '-', label=f'{k}\nr={rate:.1e}')
                 axes[r, c].legend()
             except:
                 print(k)
@@ -257,7 +261,8 @@ def init_guess(guess, sino_shape, n_ref, device):
     return guess
 
 
-def FL_forward(guess_cuda, angle_list, n_ref, rho_compound_2D, em_cs_ref, pix, atten2D_at_angle, device):
+def FL_forward(guess_cuda, angle_list, n_ref, rho_compound_2D, em_cs_ref, pix,
+               atten2D_at_angle, device='cuda'):
     """
     if n_ref > 1:
         will calculate the projection based on xanes2D given the reference spectrum
@@ -265,7 +270,11 @@ def FL_forward(guess_cuda, angle_list, n_ref, rho_compound_2D, em_cs_ref, pix, a
     if n_ref = 1:
         regular tomographic forward projection
         em_cs_ref: (n_energies), e.g. (60,) --> 1 spectrum
-
+    atten2D_at_angle:
+        attenuation of x-ray and xrf
+        (n_angles, 128, 128) e.g., (60, 128, 128), or
+        (n_angles,), or
+        1 (without attenuation)
     """
 
     theta_list = angle_list / 180. * np.pi
@@ -281,9 +290,9 @@ def FL_forward(guess_cuda, angle_list, n_ref, rho_compound_2D, em_cs_ref, pix, a
     xrf_sino = torch.ones((n_angle, n_ref, 1, s[-1])).to(device)  # (60, 2, 1, 128)
     for i_angle in range(n_angle):
         t = guess_cuda * rho_comp
-        t = rot_img_general(t, theta_list[i_angle], device)  # (2, 1, 128, 128)
-        t = t * atten2D[i_angle:i_angle + 1]
-        t_sum = torch.sum(t, axis=-2)  # (2, 1, 128)
+        t1 = rot_img_general(t, theta_list[i_angle], device)  # (2, 1, 128, 128)
+        t2 = t1 * atten2D[i_angle:i_angle + 1]
+        t_sum = torch.sum(t2, axis=-2)  # (2, 1, 128)
         if n_ref > 1:
             for i_ref in range(n_ref):
                 xrf_sino[i_angle, i_ref] = t_sum[i_ref] * em[i_angle, i_ref] * pix
@@ -293,11 +302,13 @@ def FL_forward(guess_cuda, angle_list, n_ref, rho_compound_2D, em_cs_ref, pix, a
         xrf_sino_sum = torch.sum(xrf_sino, axis=1, keepdims=True)  # (60, 1, 1, 128)
     else:
         xrf_sino_sum = xrf_sino
+    del atten2D, xrf_sino, t, t_sum
+    torch.cuda.empty_cache()
     return xrf_sino_sum
 
 
-import torch.optim as optim
-from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
+
+
 def FL_tomo_recon(guess_ini, sino_sli, angle_list, em_cs_ref, rho_compound_2D, pix, atten2D_at_angle, loss_r, lr=1e-3, n_epoch=50, device='cuda'):
     """
     guess_ini:
@@ -361,13 +372,15 @@ def FL_tomo_recon(guess_ini, sino_sli, angle_list, em_cs_ref, rho_compound_2D, p
 
         loss = 0.0
         for k in keys:
-            loss_his[k]['value'].append(loss_val[k].item())
-            if loss_r[k] > 0:
-                if k == 'mse_fit':
-                    if epoch < 100:
-                        continue
-                loss = loss + loss_val[k] * loss_r[k]
-
+            try:
+                loss_his[k]['value'].append(loss_val[k].item())
+                if loss_r[k] > 0:
+                    if k == 'mse_fit':
+                        if epoch < 100:
+                            continue
+                    loss = loss + loss_val[k] * loss_r[k]
+            except:
+                pass
         loss.backward()
         optimizer.step()
         scheduler.step(loss)
@@ -410,6 +423,11 @@ def FL_tomo_xanes_2ref(guess_ini, sino_sli, angle_list, em_cs_ref,
     lr: learning rate
 
     """
+    vgg19 = torchvision.models.vgg19(pretrained=True).features
+    for vgg_param in vgg19.parameters():
+        vgg_param.requires_grad_(False)
+    vgg19.to(device).eval()
+
     s = em_cs_ref.shape
     if len(s) == 2:
         n_ref = em_cs_ref.shape[-1]
@@ -446,7 +464,7 @@ def FL_tomo_xanes_2ref(guess_ini, sino_sli, angle_list, em_cs_ref,
         loss_val['l1_sino'] = l1_loss(sino_sum_gt_cuda, sino_out)
         loss_val['likelihood_sino'] = poisson_likelihood_loss(sino_out, sino_sum_gt_cuda)
         loss_val['img_sum'] = torch.square(img_sum_out - img_sum).mean()
-
+        loss_val['vgg'] = vgg_loss(img_sum_out, img_sum)
         loss = 0.0
         for k in keys:
             loss_his[k]['value'].append(loss_val[k].item())
@@ -455,7 +473,7 @@ def FL_tomo_xanes_2ref(guess_ini, sino_sli, angle_list, em_cs_ref,
                     if epoch < 20:
                         continue
                 loss = loss + loss_val[k] * loss_r[k]
-
+        #loss = loss + loss_val['vgg']
         loss.backward()
         optimizer.step()
         scheduler.step(loss)
@@ -467,3 +485,389 @@ def FL_tomo_xanes_2ref(guess_ini, sino_sli, angle_list, em_cs_ref,
     # guess = guess.detach().cpu().numpy().squeeze()
     return loss_his, guess_new, sino_out
 
+###################################################
+def FL_tomo_xanes_with_xrf_correction(guess_ini, config_atten, config_x_atten, config_train):
+    """
+    config_x_atten: dictionary: calculating incident x-ray attenuation
+
+        1. config_x_atten['x_atten_flag']: bool
+             True --> will calculate incident_x_ray attenuation on the fly
+        2. config_x_atten['x_atten_period']: int
+            only use if 'x_atten_flag' = True
+            e.g., 10 --> will calculate/update incident_x_ray attenuation every 10 epochs
+        3. config_x_atten['x_atten_v_other']: numpy array, shape = (100, 100)
+            only use if 'x_atten_flag' = True
+            composition concentration from other elements
+            e.g., x_atten_v_other = Co[40] + Mn[40], shape=(100, 100)
+
+    config_atten: dictionary: paramaters used in attenuation calculation
+        1. config_atten['atten2D']: numpy array
+            atteunation coefficient
+            if config_x_atten['cal_x_atten'] is True,
+                'atten2D' should include XRF attenuation of specific element
+                (e.g., Ni) and incident x-ray attenuation from other element (e.g., Co, Mn)
+
+            if config_x_atten['cal_x_atten'] is False, '
+                atten2D' includes XRF and incident x-ray attenuation from all elements.
+
+        2. config_atten['rho_compound_2D']: numpy array
+            mass density in unit of g/cm3
+
+        3. config_atten['em_cs_ref']: 2D array
+            emission cross-section for references, e.g, Ni2+, Ni3+
+
+        4. config_atten['cs_ref']: 2D array
+            absorption cross-section for references, e.g, Ni2+, Ni3+
+
+        5. config_atten['pix']: float
+            pixel size in unit of cm
+
+        6. config_atten['ref_2D']: numpy array, shape = (n_ref, 100, 100)
+            optional
+            2D oxidation map used to regulate training, e.g, (Ni2_at_0_degree, Ni3_at_0_degree)
+
+        7. config_atten['ref_2D_angle']: float, default = 0
+            2D oxidation map measured at angle, e.g, 0 degree
+
+        8. config_atten['sino']: numpy array, shape = (n_angle, 100)
+            measured sinogram
+
+        9. config_atten['angle_list']: list
+
+    config_train: dictionary: parameters used in training
+        1. config_train['n_epoch']: int
+            number of epochs, e.g, 200
+
+        2. config_train['lr']: float
+            learning rate, e.g, 0.1
+
+        3. config_train['loss_r']: dictionary
+            e.g.,
+            loss_r['mse_sino'] = 1  # MSE for sinogram
+            loss_r['tv_sino'] = 0
+            loss_r['l1_sino'] = 0
+            loss_r['tv_img'] = 0 # total variation for image
+            loss_r['mes_ref_2D'] = 0  ralated to config_atten['ref_2D']
+
+        4. config_train['device']: 'cuda', 'cpu'
+
+    """
+
+    lr = config_train['lr']
+    loss_r = config_train['loss_r']
+    n_epoch = config_train['n_epoch']
+    device = config_train['device']
+
+    pix = config_atten['pix']
+    rho = config_atten['rho_compound_2D']
+    sino_sli = config_atten['sino']
+    angle_list = config_atten['angle_list']
+    em_cs_ref = config_atten['em_cs_ref']
+    cs_ref = config_atten['cs_ref']
+
+    try:
+        atten2D = config_atten['atten2D'] # (n_angle, 100, 100)
+        atten2D = torch.tensor(atten2D).to(device)  # (n_angle, 100, 100)
+    except:
+        atten2D = 1
+
+    try:
+        ref_2D = config_atten['ref_2D'] # (n_ref, 100, 100)
+        ref_2D = torch.tensor(ref_2D).to(device)
+    except:
+        ref_2D = None
+
+    try:
+        ref_2D_angle = config_atten['ref_2D_angle'] # e.g., 0 degree
+    except:
+        ref_2D_angle = 0
+
+    try:
+        x_atten_flag = config_x_atten['x_atten_flag'] # True / False
+    except:
+        x_atten_flag = False
+    try:
+        x_atten_period = config_x_atten['x_atten_period']  # e.g, 10, update incident_x_atten every 10 epochs
+    except:
+        x_atten_period = 10
+    try:
+        v_other = config_x_atten['x_atten_v_other'] # e.g., (2, 100, 100)--> concentration of Co and Mn
+        v_other = torch.tensor(v_other).to(device)  # (100, 100)
+    except:
+        v_other = 0
+
+    # convert to tensor is needed
+
+    sino_sli = convert_to_4D_tensor(sino_sli, device) # (n_angle, 1, 1, 100,)
+    rho = torch.tensor(rho, dtype=torch.float32).to(device)
+
+    n_angle = len(angle_list)
+    s = em_cs_ref.shape
+    if len(s) == 2:
+        n_ref = em_cs_ref.shape[-1]
+    else:
+        n_ref = 1
+    keys = list(loss_r.keys())
+    loss_his = {}
+
+    for k in keys:
+        loss_his[k] = {'value': [], 'rate': loss_r[k]}
+    loss_his['img_diff'] = {'value': [], 'rate': 1}
+
+
+    guess = convert_to_4D_tensor(guess_ini, device).requires_grad_(True) # (2, 1, 100, 100)
+    model_obj_lr = [{"params": guess, "lr": lr}]
+    lr_para = {"betas": (0.9, 0.999), "amsgrad": False}
+    optimizer = torch.optim.Adam(model_obj_lr, **lr_para)
+
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.8, patience=5,
+                                  threshold=1e-16, threshold_mode='rel',
+                                  cooldown=0, min_lr=0, eps=1e-12)
+
+    if x_atten_flag: # if True, will udpate the x_ray_atten
+        x_ray_atten = FL_cal_x_atten_with_ref_elem(guess.detach(), angle_list, v_other, cs_ref, rho, pix, device)
+        x_ray_atten_freeze = x_ray_atten.clone()
+    else:
+        x_ray_atten = 1
+    img_log = {}
+    for i_ref in range(n_ref):
+        img_log[i_ref] = []
+
+    for epoch in trange(n_epoch):
+        optimizer.zero_grad()
+        if x_atten_flag: # if True, will udpate the x_ray_atten
+            if epoch % x_atten_period == 0:
+                x_ray_atten = FL_cal_x_atten_with_ref_elem(guess, angle_list, v_other, cs_ref, rho, pix, device)
+                x_ray_atten_freeze = x_ray_atten.detach()
+            else:
+                x_ray_atten = x_ray_atten_freeze
+        atten = atten2D * x_ray_atten
+
+        sino_out = FL_forward(guess, angle_list, n_ref, rho, em_cs_ref, pix, atten, device)
+        sino_dif = sino_out - sino_sli
+
+        # matching the 2D XANES results
+        mse_ref_2D = None
+        if ref_2D is not None:
+            mse_ref_2D = 0
+            for i_ref in range(n_ref-1):
+                for j_ref in range(i_ref, n_ref):
+                    gi = rot_img_general(guess[i_ref:i_ref+1], ref_2D_angle, device)
+                    gj = rot_img_general(guess[j_ref:j_ref+1], ref_2D_angle, device)
+                    ti = torch.sum(gi, axis=-2, keepdims=True)
+                    tj = torch.sum(gj, axis=-2, keepdims=True)
+                    mse_ref_2D = mse_ref_2D + ti * ref_2D[j_ref] - tj * ref_2D[i_ref]
+
+        loss_val = {}
+        loss_val['mse_sino'] = torch.square(sino_dif).mean()
+        loss_val['tv_sino'] = tv_loss_norm(sino_dif)
+        loss_val['tv_img'] = tv_loss_norm(guess)
+        loss_val['l1_sino'] = l1_loss(sino_sli, sino_out)
+        if mse_ref_2D is None:
+            loss_val['mse_ref_2D'] = 0
+        else:
+            loss_val['mse_ref_2D'] = torch.square(mse_ref_2D).mean()
+            #loss_val['tv_img'] = tv_loss_norm(torch.abs(mse_ref_2D))
+
+        loss = 0.0
+        for k in keys:
+            try:
+                loss_his[k]['value'].append(loss_val[k].item())
+                if loss_r[k] > 0:
+                    loss = loss + loss_val[k] * loss_r[k]
+            except:
+                pass
+        loss.backward()
+        optimizer.step()
+        scheduler.step(loss)
+        with torch.no_grad():
+            guess[:] = torch.clamp(guess, min=0)
+
+        for i_ref in range(n_ref):
+            img_log[i_ref].append(guess[i_ref].detach().cpu().numpy().squeeze())
+    for i_ref in range(n_ref):
+        img_log[i_ref] = np.array(img_log[i_ref])
+
+    res = {}
+    res['img'] = guess.detach().cpu().numpy().squeeze()
+    res['loss_his'] = loss_his
+    res['img_log'] = img_log
+    res['sino'] = sino_out.detach().cpu().numpy().squeeze()
+    res['atten_x_ray'] = x_ray_atten_freeze.cpu().numpy().squeeze()
+    res['atten'] = atten.detach().cpu().numpy().squeeze()
+    return res
+
+####################################################
+
+def get_features_vgg19(image, model_feature, layers=None):
+    if layers is None:
+        layers = {'2': 'conv1_2',
+                  '7': 'conv2_2',
+                  '16': 'conv3_4',
+                  '25': 'conv4_4'
+                 }
+    features = {}
+    x = image
+    for idx, layer in enumerate(model_feature):
+        x = layer(x)
+        if str(idx) in layers:
+            features[layers[str(idx)]] = x
+    return features
+
+def vgg_loss(outputs, label, vgg19, model_feature=[], device='cuda'):
+    if not torch.is_tensor(outputs):
+        out = torch.tensor(outputs)
+    else:
+        out = outputs.clone().detach()
+    if not torch.is_tensor(label):
+        lab = torch.tensor(label).detach()
+    else:
+        lab = label.clone()
+    lab_max = torch.max(lab)
+    out_max = torch.max(out)
+    #out = out / lab_max
+    out = out / out_max
+    lab = lab / lab_max
+    if out.shape[1] == 1:
+        out = out.repeat(1,3,1,1)
+    if lab.shape[1] == 1:
+        lab = lab.repeat(1,3,1,1)
+    out = out.to(device)
+    lab = lab.to(device)
+
+    feature_out = {}
+    feature_lab = {}
+    feature_out[0] = 0.5*get_features_vgg19(out, vgg19, {'2': 'conv1_2'})['conv1_2']
+    #feature_out2 = 0.5*get_features_vgg19(out, vgg19, {'25': 'conv4_4'})['conv4_4']
+    feature_out[1] = 0.5 * get_features_vgg19(out, vgg19, {'15': 'conv4_4'})['conv4_4']
+    feature_out[2] = 0.5 * get_features_vgg19(out, vgg19, {'5': 'conv4_4'})['conv4_4']
+
+    feature_lab[0] = 0.5*get_features_vgg19(lab, vgg19, {'2': 'conv1_2'})['conv1_2']
+    #feature_lab2 = 0.5*get_features_vgg19(lab, vgg19, {'25': 'conv4_4'})['conv4_4']
+    feature_lab[1] = 0.5 * get_features_vgg19(lab, vgg19, {'15': 'conv4_4'})['conv4_4']
+    feature_lab[2] = 0.5 * get_features_vgg19(lab, vgg19, {'5': 'conv4_4'})['conv4_4']
+
+    feature_loss = 0
+    n_feature = len(feature_out)
+    for i in range(n_feature):
+        feature_loss = feature_loss + nn.MSELoss()(feature_out[i], feature_lab[i])
+    return feature_loss
+
+
+def FL_x_atten_ref_elem(guess_cuda, angle_list, ref_frac, ref_cs, rho, pix, device):
+    '''
+    assume x-ray is from bottom of the object
+
+    if guess_cuda = (2, 1, 100, 100), x-ray is shining from (2, 1, x, 100)
+
+    ref_frac: shape = (100, 100), volume fraction of reference element, e.g Ni
+
+    ref_cs: shape = (n_angle, n_ref), e.g., (80, 2), incident x-ray cross-section for Ni
+
+
+    '''
+
+    ref_frac = convert_to_4D_tensor(ref_frac, device)  # (1, 1, 100, 100)
+    # guess_cuda = convert_to_4D_tensor(guess_cuda, device)
+    s = guess_cuda.shape  # (2, 1, 100, 100)
+    guess_sum = torch.sum(guess_cuda, axis=(0, 1)) + 1e-12  # to avoid deviding by 0
+    # guess_max = torch.max(guess_sum)
+    # guess_frac = guess_cuda / guess_max
+    guess_frac = guess_cuda / guess_sum
+    guess_frac = guess_frac.to(device)
+    for i in range(s[0]):
+        guess_frac[i] = guess_frac[i] * ref_frac[0]  # (2, 1, 100, 100)
+
+    theta_list = angle_list / 180. * np.pi
+    n = len(angle_list)
+    n_ref = len(guess_cuda)
+
+    x_ray_atten = torch.ones((n, s[-2], s[-1])).to(device)
+    for i_angle in range(n):
+        cs_angle = 0
+        frac_angle = rot_img_general(guess_frac, theta_list[i_angle], device)
+        for i_ref in range(n_ref):
+            cs_angle = cs_angle + ref_cs[i_angle][i_ref] * frac_angle[i_ref]
+        mu_angle = cs_angle * rho  # (1, 100, 100)
+        tmp = torch.ones((s[-2], s[-1])).to(device)
+        for j in range(s[-2] - 2, -1, -1):
+            t = mu_angle[:, j + 1] * pix
+            tmp[j] = (1 - t) * tmp[j + 1]
+            # print(tmp[j][40])
+            # x_ray_atten[i, j] = x_ray_atten[i, j+1] * (1 - t)
+        x_ray_atten[i_angle] = tmp
+    return x_ray_atten
+
+
+def FL_cal_x_atten_with_ref_elem(guess_cuda, angle_list, v_other, cs_ref, rho, pix, device):
+    '''
+    all should be on CUDA device
+
+    v_other: volume sum from all other element, e.g., Co[40] + Mn[40]
+
+    assume x-ray is from bottom of the object
+    if guess_cuda = (2, 1, 100, 100), x-ray is shining from (2, 1, x, 100)
+
+    ref_frac: shape = (100, 100), volume fraction of reference element, e.g Ni
+
+    ref_cs: shape = (n_angle, n_ref), e.g., (80, 2), incident x-ray cross-section for Ni
+
+    '''
+
+    s = guess_cuda.shape  # (2, 1, 100, 100)
+
+    guess_sum = torch.sum(guess_cuda, axis=(0, 1)) + v_other
+    guess_frac = guess_cuda / torch.max(guess_sum)
+
+    theta_list = torch.tensor(angle_list / 180. * np.pi).to(device)
+    n = len(angle_list)
+    n_ref = len(guess_cuda)
+
+    x_ray = torch.ones((n, s[-2], s[-1])).to(device)
+
+    type_rho = str(type(rho))
+    if 'array' in type_rho or 'Tensor' in type_rho:
+        rho = convert_to_4D_tensor(rho, device)
+
+    for i_angle in range(n):
+        mu_angle = 0
+        frac_angle = rot_img_general(guess_frac*rho, theta_list[i_angle], device)
+        for i_ref in range(n_ref):
+            mu_angle = mu_angle + cs_ref[i_angle][i_ref] * frac_angle[i_ref]
+        #mu_angle = cs_angle * rho  # (1, 100, 100)
+
+        """
+        # old inplace code, not working
+        for j in range(s[-2]-2, -1, -1):
+            t = mu_angle[:, j+1] * pix
+            x_ray[i_angle, j] = x_ray[i_angle, j+1] * (1 - t)
+        cs_angle = cs_angle.detach()
+        """
+
+        # --- vectorized replacement for the backward column-wise loop ---
+        # mu_angle: shape (1, H, W)
+        # desired x_row[j] = prod_{k=j+1..H-1} (1 - mu_angle[:,k,:]*pix), and x_row[H-1] = 1
+
+        f = 1.0 - (mu_angle * pix)  # shape (1, H, W)
+        H = f.shape[1]
+
+        # If H == 1, x_row is just ones
+        if H == 1:
+            x_row = torch.ones((1, 1, f.shape[2]), device=f.device, dtype=f.dtype)
+        else:
+            # reverse f along the column dim, compute cumulative product from the end
+            rev_f = torch.flip(f, dims=[1])  # shape (1, H, W)
+            rev_cumprod = torch.cumprod(rev_f, dim=1)  # shape (1, H, W)
+            # rev_cumprod[:, 0] == f_{H-1}, rev_cumprod[:, H-1] == prod_{k=H-1..0} f_k
+
+            # we need x_row[j] = prod_{k=j+1..H-1} f_k
+            # take first H-1 elements of rev_cumprod and flip back to align:
+            proc = rev_cumprod[:, :H - 1, :]  # shape (1, H-1, W)
+            proc = torch.flip(proc, dims=[1])  # shape (1, H-1, W)
+            ones_col = torch.ones((1, 1, f.shape[2]), device=f.device, dtype=f.dtype)
+            x_row = torch.cat([proc, ones_col], dim=1)  # shape (1, H, W)
+
+        # now x_row.squeeze(0) has shape (H, W) like x_ray[i_angle]
+        x_ray[i_angle] = x_row.squeeze(0)
+        # --- end vectorized section ---
+    return x_ray

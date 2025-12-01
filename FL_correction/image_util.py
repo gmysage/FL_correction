@@ -335,9 +335,10 @@ def im_bin(img, binning=2, mode='xyz'):
 
     return img1
 
-def adaptive_threshold(img, fill_hole=False, dilation=0):
+def adaptive_threshold(img, fill_hole=False, dilation=0, erosion=0):
     s = img.shape
     mask = np.ones(s)
+    struct = ndimage.generate_binary_structure(2, 1)
     if len(s) == 3:
         for i in range(s[0]):
             image = img[i]
@@ -348,10 +349,12 @@ def adaptive_threshold(img, fill_hole=False, dilation=0):
                 if fill_hole:
                     mask[i] = ndimage.binary_fill_holes(mask[i], np.ones((5, 5)))
                 if dilation > 0:
-                    struct = ndimage.generate_binary_structure(2, 1)
                     mask[i] = ndimage.binary_dilation(mask[i], structure=struct, iterations=dilation)
-            except:
+                if erosion > 0:
+                    mask[i] = ndimage.binary_erosion(mask[i], structure=struct, iterations=erosion)
+            except Exception as err:
                 mask[i] = 0
+
     elif len(s) == 2:
         image = img
         try:
@@ -361,10 +364,13 @@ def adaptive_threshold(img, fill_hole=False, dilation=0):
             if fill_hole:
                  mask = ndimage.binary_fill_holes(mask, np.ones((5, 5)))
             if dilation > 0:
-                struct = ndimage.generate_binary_structure(2, 1)
                 mask = ndimage.binary_dilation(mask, structure=struct, iterations=dilation)
-        except:
+            if erosion > 0:
+                mask = ndimage.binary_erosion(mask, structure=struct, iterations=erosion)
+
+        except Exception as err:
             mask[:] = 0
+
     else:
         print('image shape not recognized')
     return mask
@@ -798,3 +804,28 @@ def add_blur_noise_to_img(img, gaussian_kernel=1.5, poisson_counts=[10000]):
     img_b = gf(img_a, gaussian_kernel)
     img_c = np.random.poisson(img_b*poisson_counts[-1])/poisson_counts[-1]
     return img_c
+
+
+def update_img_with_mask_comp(img, mask_comp, method='median'):
+    n = len(img)
+    n_comp = len(mask_comp)
+    img1 = np.zeros_like(img)
+
+    for i in range(n): # ni2, ni3
+        t_max = -1
+        c = 0
+        for j in range(n_comp):
+            t = img[i] * mask_comp[j]
+            if method == 'median':
+                t = np.median(t[t>0])
+            else:
+                t = np.mean(t[t > 0])
+            t_max = max(t, t_max)
+
+            if t < t_max * 1e-3:
+                c += img[i] * mask_comp[j]
+            else:
+                c += t * mask_comp[j]
+
+        img1[i] = c
+    return img1

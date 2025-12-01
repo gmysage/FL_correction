@@ -1,6 +1,6 @@
 from skimage import io
 
-
+#from examples.HXN_sparse_tomo.data_process_2025Q1 import init_guess
 from .image_util import *
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,7 +8,7 @@ import h5py
 import os
 import glob
 import xraylib
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, curve_fit
 from scipy.interpolate import InterpolatedUnivariateSpline, UnivariateSpline
 from numpy.polynomial.polynomial import polyfit, polyval
 
@@ -38,34 +38,49 @@ def interp_line(x0, y0, x_interp, k=1):
     y_interp = f(x_interp)
     return y_interp
 
-def load_recon(fn_recon, max_iter=10):
+def load_recon(fn_recon, id_iter='all'):
     if fn_recon[-1] == '/':
         fn_recon = fn_recon[:-1]
     fn_list = np.sort(glob.glob(fn_recon + '/*'))
     recon = {}
-    for i in range(max_iter):
-        recon[i] = {'sum':0}
-    n_iter = 0
+    ele_group = []
+    keys = []
     for fn in fn_list:
         fn_short = fn.split('/')[-1]
         tmp = fn_short.split('_')
         ele = tmp[1]
         it = int(tmp[-1].split('.')[0])
-        recon[it][ele] = io.imread(fn)
-        if it > n_iter:
-            n_iter = it
-    n_iter += 1
-    for i in range(n_iter):
-        keys = list(recon[i].keys()) # 'Ni', 'Co', 'Mn', 'sum'
-        for k in keys:
-            if k == 'sum':
-                continue
+        img = io.imread(fn)
+        if it not in recon.keys():
+            recon[it] = {}
+        recon[it][ele] = img
+        ele_group.append(ele)
+        keys.append(it)
+    ele_unique = list(set(ele_group))
+    key_unique = list(set(keys))
+    n_iter = np.max(key_unique)
+    for it in key_unique:
+        if 'sum' in recon[it].keys():
+            continue
+        recon[it]['sum'] = 0
+        for ele in ele_unique:
             try:
-                t = int(t[-1]) #'Ni2' will return True, 'Ni' will raise exception
+                int(ele[-1]) # if it is Ni2, it will bypass it
                 continue
             except:
-                recon[i]['sum'] += recon[i][k]
-    return recon, n_iter
+                recon[it]['sum'] += recon[it][ele]
+    if id_iter == 'all':
+        return recon, n_iter
+    else:
+        rec = {}
+        try:
+            rec[id_iter] = recon[id_iter]
+            return rec, id_iter
+        except Exception as err:
+            print(err)
+            print('will return the whole dataset of recon')
+            return recon, n_iter
+
 
 
 def read_attenuation(angle_id, fpath_atten, elem):
@@ -454,8 +469,33 @@ def cal_rho_compound(img4D, param):
         rho_comp += rho[elem_comp[i]] * frac[i]
     return rho_comp
 
+def gaussian_function(x, amplitude, x_mean, sigma, offset):
+    return amplitude * np.exp(-(x-x_mean)**2 / (2 * sigma**2)) + offset
 
 
+def fit_gauss(x, y, x_mean=None):
+    if len(x) - len(y) == 1:
+        x = (x[1:] + x[:-1]) / 2
+    if len(y) - len(x) == 1:
+        y = (y[1:] + y[:-1]) / 2
+    if x_mean is None:
+        t = x[y>0.005*np.max(y)]
+        x_mean = np.mean(t)
+    else:
+        x_mean = np.mean(x)
+    init_guess = [np.max(y), np.mean(t), x_mean, np.min(y)*0.1]
+    optimized_params, covariance_matrix = curve_fit(
+        gaussian_function,
+        x,
+        y,
+        p0=init_guess,
+        maxfev=10000
+    )
+    amplitude, mean, sigma, offset = optimized_params
+    xx = np.linspace(np.min(x), np.max(x), 1000)
+    yy = gaussian_function(xx, *optimized_params)
+    fwhm = np.abs(2.355 * sigma)
+    return xx, yy, fwhm
 
 ##############################################
 ## following function are copied from pyxas
