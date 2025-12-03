@@ -662,7 +662,8 @@ def FL_tomo_xanes_with_xrf_correction(guess_ini, config_atten, config_x_atten, c
         loss_val['mse_sino'] = torch.square(sino_dif).mean()
         loss_val['tv_sino'] = tv_loss_norm(sino_dif)
         loss_val['tv_img'] = tv_loss_norm(guess)
-        loss_val['l1_sino'] = l1_loss(sino_sli, sino_out)
+        loss_val['l1_sino'] = l1_loss(sino_out, sino_sli)
+        loss_val['poisson_sino'] = poisson_likelihood_loss(sino_out, sino_sli)
         if mse_ref_2D is None:
             loss_val['mse_ref_2D'] = 0
         else:
