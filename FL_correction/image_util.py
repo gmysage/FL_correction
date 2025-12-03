@@ -816,16 +816,18 @@ def update_img_with_mask_comp(img, mask_comp, method='median'):
         c = 0
         for j in range(n_comp):
             t = img[i] * mask_comp[j]
-            if method == 'median':
-                t = np.median(t[t>0])
-            else:
-                t = np.mean(t[t > 0])
-            t_max = max(t, t_max)
 
-            if t < t_max * 1e-3:
-                c += img[i] * mask_comp[j]
-            else:
-                c += t * mask_comp[j]
+            val = t[t > 0]
+            if len(val) > 0:
+                if method == 'median':
+                    t = np.median(val)
+                else:
+                    t = np.mean(val)
+                t_max = max(t, t_max)
 
+                if t < t_max * 1e-3:
+                    c += img[i] * mask_comp[j]
+                else:
+                    c += t * mask_comp[j]
         img1[i] = c
     return img1
