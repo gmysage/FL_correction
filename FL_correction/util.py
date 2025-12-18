@@ -11,7 +11,7 @@ import xraylib
 from scipy.optimize import least_squares, curve_fit
 from scipy.interpolate import InterpolatedUnivariateSpline, UnivariateSpline
 from numpy.polynomial.polynomial import polyfit, polyval
-
+from scipy.signal import savgol_filter
 
 def find_nearest(data, x):
     tmp = np.abs(data - x)
@@ -31,6 +31,36 @@ def exclude_idx(data, exclude_index):
         data_r.append(data[i])
     data_r = np.array(data_r)
     return data_r
+
+
+def smooth_savgol(y, window_length=11, polyorder=3):
+    y = np.asarray(y)
+    # Ensure window_length is valid
+    if window_length % 2 == 0:
+        raise ValueError("window_length must be an odd integer.")
+    if window_length <= polyorder:
+        raise ValueError("window_length must be greater than polyorder.")
+    return savgol_filter(y, window_length=window_length, polyorder=polyorder)
+
+
+def fit_peak_curve_spline(x, y, fit_order=3, smooth=0.002, weight=[1]):
+    if not len(weight) == len(x):
+        weight = np.ones((len(x)))
+    spl = UnivariateSpline(x, y, k=fit_order, s=smooth, w=weight)
+    xx = np.linspace(x[0], x[-1], 10001)
+    yy = spl(xx)
+    peak_pos = xx[np.argmax(yy)]
+    fit_error = np.sum((y - spl(x)**2))
+    edge_pos = xx[np.argmax(np.abs(np.diff(spl(xx))))]
+    res = {}
+    res['peak_pos'] = peak_pos
+    res['peak_val'] = spl(peak_pos)
+    res['edge_pos'] = edge_pos
+    res['edge_val'] = spl(edge_pos)
+    res['fit_error'] = fit_error
+    res['spl'] = spl
+    res['xx'] = xx
+    return res
 
 
 def interp_line(x0, y0, x_interp, k=1):

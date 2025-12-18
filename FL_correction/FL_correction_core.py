@@ -24,6 +24,12 @@ import warnings
 warnings.filterwarnings('ignore')
 
 try:
+    import atten_cuda # C, CUDA compiled function for XRF attenuation calculation
+    atten_cuda_available = True
+except:
+    atten_cuda_available = False
+
+try:
     import torch
     torch_available = True
 except:
@@ -944,6 +950,65 @@ def get_atten_coef(elem_type, elem_compound, XEng_list, em_E):
             cs[f'{ec[i]}-{et[j]}'] = xraylib.CS_Total_CP(ec[i], em_E[et[j]])
     return cs
 
+def cal_atten4D_fl(frac4D_r, param_angle_energy, position_det='r', detector_offset_angle=0,
+                   num_cpu=8, use_frac=True):
+    """
+
+    Rotate the 3D volume to change configuration to:
+    detector: sit in front of the 3D volume, which means it sit at bottom of each 2D slice of 3D
+
+    use_frac: False
+        frac4D_r: can be the element concentration. will do: frac4D_r = cal_frac(frac4D_r)
+
+    use_frac: True
+        frac4D_r:
+            concentration ratio (fraction) of elements
+            calculated from "cal_frac(img4D_r)"
+
+    position_det:
+        'r': detector is sitting on the right side of image, it needs to rotate clockwise
+        'l': detector is sitting on the left side of image, it needs to rotate counter-clockwise
+
+    """
+    if not use_frac:
+        res = cal_frac(frac4D_r, scale_range=[0.02, 0.98], enable_scale=True, scale_limit=0.95)
+        frac4D_r = res['frac']
+    elem_type = param_angle_energy['elem_type']
+    frac = rotate_forward_detection(frac4D_r, position_det)
+    atten_fl = {}
+    if torch_available and torch.cuda.is_available():
+        atten_xrf = cal_xrf_atten_cuda(frac, param_angle_energy, detector_offset_angle,'cuda')
+    else:
+        atten_xrf = cal_xrf_atten(frac, param_angle_energy, detector_offset_angle, num_cpu)
+    for i, elem in enumerate(elem_type):
+        atten_fl[elem] = atten_xrf[i]
+    atten_fl = rotate_backward_detection(atten_fl, position_det)
+    return atten_fl
+
+
+def cal_atten4D_xray(frac4D_r, param_angle_energy, position_xray='b',
+                     dict_use_ref_angle={}, use_frac=True):
+    """
+    use_frac: False
+        frac4D_r: can be the element concentration. will do: frac4D_r = cal_frac(frac4D_r)
+
+    use_frac: True
+        frac4D_r:
+            concentration ratio (fraction) of elements
+            calculated from "cal_frac(img4D_r)"
+    """
+    if not use_frac:
+        res = cal_frac(frac4D_r, scale_range=[0.02, 0.98], enable_scale=True, scale_limit=0.95)
+        frac4D_r = res['frac']
+    if position_xray == 't': # xray direction is from top-to-bottom:
+        frac = frac4D_r[:, :, ::-1]
+    else:
+        frac = deepcopy(frac4D_r)
+    atten_x = cal_incident_x_ray_atten(frac, param_angle_energy, dict_use_ref_angle)
+    if position_xray == 't':
+        for k in atten_x.keys():
+            atten_x[k] = atten_x[k][:, ::-1]
+    return atten_x
 
 
 def cal_atten_with_direction(img4D_r, param_angle_energy, position_det='r', enable_scale=False,
@@ -1012,19 +1077,20 @@ def cal_atten_with_direction(img4D_r, param_angle_energy, position_det='r', enab
     atten_xray is element specific: atten_xray['Ni', 'Co', 'Mn'] 
     the total x-ray attenuation will be: atten_xray['Ni'] * atten_xray['Mn'] * atten_xray['Co']    
     """
+
+
     atten, atten_fl, atten_xray = cal_atten_3D(img4D_rr, param_angle_energy, enable_scale=enable_scale,
                                                detector_offset_angle=detector_offset_angle,
                                                dict_use_ref_rotate=dict_use_ref_rotate,
                                                num_cpu=num_cpu)
 
-
     atten3D = {}
     atten3D_fl = {}
     atten3D_xray = {}
-    # reverse the rotation 
+    # reverse the rotation
     for i in range(n_type):
         ele = elem_type[i]
-        if position_det == 'r': 
+        if position_det == 'r':
             tmp = fast_rot90_3D(atten[ele], ax=0, mode='c-clock')
             atten3D[ele] = tmp
 
@@ -1034,7 +1100,7 @@ def cal_atten_with_direction(img4D_r, param_angle_energy, position_det='r', enab
             #tmp2 = fast_rot90_3D(atten_xray, ax=0, mode='c-clock')
             tmp2 = fast_rot90_3D(atten_xray[ele], ax=0, mode='c-clock')
             atten3D_xray[ele] = tmp2
-        if position_det == 'l': 
+        if position_det == 'l':
             tmp = atten[ele][:, :, ::-1]
             tmp = fast_rot90_3D(tmp, ax=0, mode='clock')
             atten3D[ele] = tmp
@@ -1049,7 +1115,37 @@ def cal_atten_with_direction(img4D_r, param_angle_energy, position_det='r', enab
             atten3D_xray[ele] = tmp2
     return atten3D, atten3D_fl, atten3D_xray
 
+def rotate_forward_detection(img4D_r, position_det='r'):
+    """
+    Rotate the 3D volume to change configuration to:
+    x-ray: change to pass from left->rigth of the 3D volume
+    detector: sit in front of the 3D volume, which means it sit at bottom of each 2D slice of 3D
+    """
+    if position_det == 'r': # if detector locates on the right side:
+        img4D_rr = fast_rot90_4D(img4D_r, ax=0, mode='clock')
+    if position_det == 'l': # if detector locates on the left side:
+        img4D_rr = fast_rot90_4D(img4D_r, ax=0, mode='c-clock')
+        img4D_rr = img4D_rr[:, :, :, ::-1]
+    return img4D_rr
 
+def rotate_backward_detection(atten4D, position_det='r'):
+    if type(atten4D) is dict:
+        atten4D_r = {}
+        for k in atten4D.keys():
+            if position_det == 'r':
+                tmp = fast_rot90_3D(atten4D[k], ax=0, mode='c-clock')
+                atten4D_r[k] = tmp
+            if position_det == 'l':
+                tmp = atten4D[k][:, :, ::-1]
+                tmp = fast_rot90_3D(tmp, ax=0, mode='clock')
+                atten4D_r[k] = tmp
+    else: # np.array e.g., (n_elem, 160, 200, 200)
+        if position_det == 'r':
+            atten4D_r = fast_rot90_4D(atten4D, ax=0, mode='c-clock')
+        if position_det == 'l':
+            atten4D_r = atten4D[:, :, :, ::-1]
+            atten4D_r = fast_rot90_4D(atten4D_r, ax=0, mode='clock')
+    return atten4D_r
 
 def generate_H(elem, sli, angle_list, bad_angle_index=[], fpath_atten='./Angle_prj', flag=1, shape_2D=[]):
     """
@@ -1414,13 +1510,44 @@ def atten_2D_slice_all_elem(sli):
         for j in np.arange(0, n_col): # column
             cord = retrieve_data_mask_cord(s_mu[1:], s_mask, sli, int(i), int(j))
             zs, ze, xs, xe, ys, ye, m_zs, m_ze, m_xs, m_xe, m_ys, m_ye = cord  
-            for k in range(n_elem):
-                sub_volume_mu = mu_all_elem[k, zs:ze, xs:xe, ys:ye]
-                sub_volume_mask = mask[m_zs:m_ze, m_xs:m_xe, m_ys:m_ye]
-                mu_masked = sub_volume_mu * sub_volume_mask
-                atten_all[k, i, j] = np.sum(mu_masked)   
+
+            A = mu_all_elem[:, zs:ze, xs:xe, ys:ye]
+            B = mask[m_zs:m_ze, m_xs:m_xe, m_ys:m_ye]
+            atten_all[:, i, j] = (A * B).sum(axis=(1,2,3))
             
     return atten_all
+
+
+def atten_2D_slice_all_elem_cuda(sli, mask3D_cuda, mu_all_elem_cuda, device):
+    '''
+    mu_all_elem: for all elements, shape = (5, 75, 100, 100)
+    '''
+    #global mu_all_elem_cuda
+    mu_all_elem_cuda = mu_all_elem_cuda.to(device)
+    s_mu = mu_all_elem_cuda.shape  # (5, 75, 100, 100)
+    n_elem, n_sli, n_row, n_col = s_mu
+    atten_all_cuda = torch.ones((n_elem, n_row, n_col), dtype=torch.float).to(device) # (5, 100, 100)
+
+    for i in range(n_row): # row
+        length = max(n_row-i, 7)
+        mask_cuda = mask3D_cuda[f'{length}'].to(device)
+        s_mask = mask_cuda.shape
+
+        for j in np.arange(n_col): # column
+            cord = retrieve_data_mask_cord(s_mu[1:], s_mask, sli, int(i), int(j))
+            zs, ze, xs, xe, ys, ye, m_zs, m_ze, m_xs, m_xe, m_ys, m_ye = cord
+
+            A = mu_all_elem_cuda[:, zs:ze, xs:xe, ys:ye]
+            B = mask_cuda[m_zs:m_ze, m_xs:m_xe, m_ys:m_ye]
+            """
+            mu_masked_cuda = A * B
+            atten_all_cuda[:, i, j] = torch.sum(mu_masked_cuda, axis=(1,2,3))
+            """
+            #atten_all_cuda[:, i, j] = torch.einsum('kxyz,xyz->k', A, B)
+            atten_all_cuda[:, i, j] = (A*B).sum(dim=(1,2,3))
+    #atten_all_cuda = atten_all_cuda.cpu().numpy()
+    return atten_all_cuda
+
 
 
 def retrieve_data_mask_cord(data_shape, mask_shape, sli, row, col):
@@ -1668,6 +1795,23 @@ def retrieve_data_mask(data3d, row, col, sli, mask):
     return data
 
 
+def cal_atten4D(img4D_r,
+                param_angle_energy,
+                position_det='r',
+                position_xray='b',
+                enable_scale=True,
+                detector_offset_angle=0,
+                dict_use_ref_angle={},
+                num_cpu=8):
+    res = cal_frac(img4D_r, scale_range=[0.02, 0.98], enable_scale=enable_scale, scale_limit=0.95)
+    frac4D_r = res['frac']
+    atten_fl = cal_atten4D_fl(frac4D_r, param_angle_energy, position_det, detector_offset_angle, num_cpu)
+    atten_x = cal_atten4D_xray(frac4D_r, param_angle_energy, position_xray, dict_use_ref_angle)
+    atten = {}
+    for k in atten_fl.keys():
+        atten[k] = atten_fl[k] * atten_x[k]
+    return atten, atten_fl, atten_x
+
 def cal_atten_3D(img4D_rr, param_angle_energy, enable_scale=False,
                  detector_offset_angle=0, dict_use_ref_rotate={}, num_cpu=8):
     """
@@ -1689,7 +1833,10 @@ def cal_atten_3D(img4D_rr, param_angle_energy, enable_scale=False,
     atten = {}
 
     # xrf attenuation
-    atten_xrf = cal_xrf_atten(frac, param_angle_energy, detector_offset_angle, num_cpu)
+    if torch_available and torch.cuda.is_available():
+        atten_xrf = cal_xrf_atten_cuda(frac, param_angle_energy, detector_offset_angle,'cuda')
+    else:
+        atten_xrf = cal_xrf_atten(frac, param_angle_energy, detector_offset_angle, num_cpu)
     for i, elem in enumerate(elem_type):
         atten_fl[elem] = atten_xrf[i]
     """
@@ -1756,9 +1903,9 @@ def xrf_atten(dict_mu, elem_type, num_cpu=1):
     return res
 """
 
-
+"""
 def cal_incident_x_ray_atten(frac_4D, param_angle_energy, dict_use_ref_rotate={}):
-    """
+    '''
     img4D: [n_elem, 100, 100, 100]
 
     Note: incident x-ray is from the "left" side of the 3D volume
@@ -1767,7 +1914,7 @@ def cal_incident_x_ray_atten(frac_4D, param_angle_energy, dict_use_ref_rotate={}
         dict_use_ref['use_ref'] = True
         dict_use_ref['ref_3D'] = (Ni2, Ni3)
         dict_use_ref['ref_comp'] = 'LiNiO2'
-    """
+    '''
     if len(dict_use_ref_rotate) > 0:
         use_ref = dict_use_ref_rotate['use_ref']
         ref_3D = dict_use_ref_rotate['ref_3D']
@@ -1806,7 +1953,7 @@ def cal_incident_x_ray_atten(frac_4D, param_angle_energy, dict_use_ref_rotate={}
         #t = np.exp(-mu['x'][:, :, j-1] * pix)
         x_ray_atten[:, :, j] = x_ray_atten[:, :, j - 1] * (1-t)
     return x_ray_atten
-
+"""
 
 def cal_incident_x_ray_atten_v2(frac_4D, param_angle_energy, dict_use_ref_rotate={}):
     """
@@ -1847,8 +1994,6 @@ def cal_incident_x_ray_atten_v2(frac_4D, param_angle_energy, dict_use_ref_rotate
         # cs[LiCoO2-8.4keV] and is cs[LiMnO2-8.4keV] is single value
         ele = elem_type[j]
         mu[ele] = frac[j] * cs_[f'{elem_comp}-x'] * rho[elem_comp]
-        #mu['x'] += frac[j] * cs_[f'{elem_comp}-x'] * rho[elem_comp]
-
     s = frac_4D[0].shape # (100, 100, 100)
     x_ray_atten = {}
     for ele in elem_type:
@@ -1857,10 +2002,63 @@ def cal_incident_x_ray_atten_v2(frac_4D, param_angle_energy, dict_use_ref_rotate
             # x_ray_atten[:, :, j] = x_ray_atten[:, :, j-1] * np.exp(-mu['x'][:, :, j-1] * pix)
             # since mu['x'][:, :, j-1] * pix is very small, e.g. for 100nm (1e-5cm)pix, and mu=1000, the value is 0.01
             # exp(-mu['x'][:, :, j-1] * pix) ~ 1-mu['x'][:, :, j-1] * pix
-
             t = mu[ele][:, :, j - 1] * pix
-            #t = np.exp(-mu['x'][:, :, j-1] * pix)
             x_ray_atten[ele][:, :, j] = x_ray_atten[ele][:, :, j - 1] * (1-t)
+    return x_ray_atten
+
+
+def cal_incident_x_ray_atten(frac_4D, param_angle_energy, dict_use_ref_rotate={}):
+    """
+    img4D: [n_elem, 100, 100, 100]
+
+    Note: incident x-ray is from the "bottom" to "top" of the 3D volume
+
+    dict_use_ref: parameter determine if use reference spectrum to interpolate absorption cross-section
+        dict_use_ref['use_ref'] = True
+        dict_use_ref['ref_3D'] = (Ni2, Ni3)
+        dict_use_ref['ref_comp'] = 'LiNiO2'
+    """
+    if len(dict_use_ref_rotate) > 0:
+        use_ref = dict_use_ref_rotate['use_ref']
+        ref_3D = dict_use_ref_rotate['ref_3D']
+        ref_comp = dict_use_ref_rotate['ref_comp']
+    else:
+        use_ref = False
+    cs_ = deepcopy(param_angle_energy['cs'])
+    elem_type = cs_['elem_type']
+    elem_compound = cs_['elem_compound']
+    rho = param_angle_energy['rho']
+    pix = param_angle_energy['pix']
+    frac = frac_4D
+    mu = {}
+    if use_ref:
+        assert ref_comp is not None, "need to provide 'ref_comp', e.g, 'LiNiO2'"
+        cs_ref = compose_cs_incident_xray_with_reference(ref_3D, cs_, ref_comp)
+        cs_[f'{ref_comp}-x'] = cs_ref # this is a 3D volume of cross-section
+
+    for j, elem_comp in enumerate(elem_compound):
+        # e.g
+        # mu['x'] = mu[8.4 keV] = f[LiNiO2] * cs[LiNiO2-8.4keV] * rho[LiNiO2] +
+        #                       + f[LiCoO2] * cs[LiCoO2-8.4keV] * rho[LiCoO2] +
+        #                       + f[LiMnO2] * cs[LiMnO2-8.4keV] * rho[LiMnO2] +
+        # note if use ref:
+        # cs[LiNiO2-8.4keV] is a 3D volume
+        # cs[LiCoO2-8.4keV] and is cs[LiMnO2-8.4keV] is single value
+        ele = elem_type[j]
+        mu[ele] = frac[j] * cs_[f'{elem_comp}-x'] * rho[elem_comp]
+
+    s = frac_4D[0].shape # (100, 100, 100)
+    n_row = s[1]
+    x_ray_atten = {}
+    for ele in elem_type:
+        x_ray_atten[ele] = np.ones(s)
+
+        f = 1 - mu[ele] * pix
+        rev_f = np.flip(f, axis=1)
+        rev_cumprod = np.cumprod(rev_f, axis=1)
+        proc = rev_cumprod[:, :n_row-1]
+        proc = np.flip(proc, axis=1)
+        x_ray_atten[ele][:, :-1]=proc
     return x_ray_atten
 
 
@@ -1917,6 +2115,63 @@ def cal_xrf_atten(frac_4D, param_angle_energy, detector_offset_angle=0, num_cpu=
     te = time.time()
     print(te-ts)
     return atten_xrf
+
+def cal_xrf_atten_cuda(frac_4D, param_angle_energy, detector_offset_angle=0, device='cuda'):
+    '''
+        Geometry:
+            Detector is in front of 3D volume (h, r, c), it is at the end of row (r)
+
+        mu_all_elem, 4D array, shape = (5, 75, 100, 100)
+        num_cpu:
+            if 1: run in sequence
+            if >1: run using mpi
+        '''
+    #global mu_all_elem_cuda
+
+    cs_ = deepcopy(param_angle_energy['cs'])
+    elem_type = cs_['elem_type'] # 'Ni', 'Co', 'Mn'
+    elem_compound = cs_['elem_compound'] # 'LiNiO2', 'LiCoO2', 'LiMnO2'
+    rho = param_angle_energy['rho']
+    pix = param_angle_energy['pix']
+    frac = frac_4D
+    dict_mu = {}
+    for i, xrf_eng in enumerate(elem_type): # ['Ni', 'Co', 'Mn']
+        dict_mu[xrf_eng] = 0
+        for j, elem_comp in enumerate(elem_compound):
+            # e.g
+            # mu['Ni'] = mu[7.4keV] = f[LiNiO2] * cs[LiNiO2-7.4keV] * rho[LiNiO2] +
+            #                       + f[LiCoO2] * cs[LiCoO2-7.4keV] * rho[LiCoO2] +
+            #                       + f[LiMnO2] * cs[LiMnO2-7.4keV] * rho[LiMnO2] +
+            dict_mu[xrf_eng] += frac[j] * cs_[f'{elem_comp}-{xrf_eng}'] * rho[elem_comp]
+
+    mu_xrf = rot3D_dict_img(dict_mu, detector_offset_angle)
+    mu_all_elem_cuda = pre_treat(list(mu_xrf[k] for k in elem_type))
+    mu_all_elem_cuda = torch.tensor(mu_all_elem_cuda, dtype=torch.float).to(device) # (5, 75, 100, 100)
+    s_mu = mu_all_elem_cuda.shape
+
+    atten_all_4D = torch.zeros_like(mu_all_elem_cuda).to(device) # (5, 75, 100, 100)
+
+    if atten_cuda_available: # using C, CUDA compiled function
+        n_row = s_mu[-2]
+        length_key = str(n_row)
+        mask = torch.tensor(mask3D[length_key], dtype=torch.float32).to(device)
+        atten_cuda.atten_cuda(mu_all_elem_cuda, mask, atten_all_4D)
+        torch.cuda.synchronize()
+    else:
+        mask3D_cuda = {}
+        for k in mask3D.keys():
+            mask3D_cuda[k] = torch.tensor(mask3D[k], dtype=torch.float).to(device)
+
+        n_sli = s_mu[1]
+        for sli in trange(n_sli):
+            atten_all_4D[:, sli] = atten_2D_slice_all_elem_cuda(sli, mask3D_cuda, mu_all_elem_cuda, device)
+
+    res = atten_all_4D.cpu().numpy()
+    res = rot3D(res, -detector_offset_angle)
+    atten_xrf = np.exp(-res * pix)
+    return atten_xrf
+
+
 
 
 def compose_cs_incident_xray_with_reference(ref_3D, ref_cs, ref_comp):
@@ -2096,14 +2351,19 @@ def cal_and_save_atten_prj(param, recon4D, angle_list, ref_prj, fsave='./Angle_p
                     prj[i, ang_id] = ref_prj[i, ang_id]
                 write_projection('m', elem, prj[i, ang_id], angle_list[ang_id], ang_id, fsave)
             write_attenuation(elem, res['atten'][elem], ang_id, fsave)
-            # write fluorecent attenuantion
-            write_attenuation_fl(elem, res['atten_fl'][elem], ang_id, fsave)
-            # write incident xray attenuantion
-            write_attenuation_xray(elem, res['atten_xray'][elem], ang_id, fsave)
+            write_attenuation_fl(elem, res['atten_fl'][elem], ang_id, fsave) # write fluorecent attenuantion
+            write_attenuation_xray(elem, res['atten_xray'][elem], ang_id, fsave) # write incident xray attenuantion
 
 
-def cal_atten_prj_at_angle(current_angle, img4D, param_angle_energy, position_det='r', enable_scale=False,
-                           detector_offset_angle=0, dict_use_ref={}, num_cpu=8):
+def cal_atten_prj_at_angle(current_angle,
+                           img4D,
+                           param_angle_energy,
+                           position_det='r',
+                           position_xray='b',
+                           enable_scale=False,
+                           detector_offset_angle=0,
+                           dict_use_ref={},
+                           num_cpu=8):
     '''
     calculate the attenuation and projection at single angle
     '''
@@ -2111,24 +2371,28 @@ def cal_atten_prj_at_angle(current_angle, img4D, param_angle_energy, position_de
     elem_type = param_angle_energy['elem_type']
     n_type = len(elem_type)
     img4D_r = rot3D(img4D, current_angle)
-    prj = {}
-    prj_sum = 0
-
-    dict_use_ref_angle = deepcopy(dict_use_ref)
-    # need to rotate dict_use_ref['ref_3D']
-    if len(dict_use_ref_angle) > 0:
-        if dict_use_ref_angle['use_ref']:
-            ref_3D = dict_use_ref_angle['ref_3D']
-            n_ref = len(ref_3D)
-            for i in range(n_ref):
-                dict_use_ref_angle['ref_3D'][i] = rot3D(ref_3D[i], current_angle)
 
 
+    dict_use_ref_angle = update_dict_use_ref_at_angle(dict_use_ref, current_angle)
+
+    """
     atten3D, atten3D_fl, atten3D_xray = cal_atten_with_direction(img4D_r, param_angle_energy, position_det=position_det,
                                                            enable_scale=enable_scale,
                                                            detector_offset_angle=detector_offset_angle,
                                                            dict_use_ref_angle=dict_use_ref_angle,
                                                            num_cpu=num_cpu)
+    """
+    atten3D, atten3D_fl, atten3D_xray = cal_atten4D(img4D_r,
+                                                    param_angle_energy,
+                                                    position_det,
+                                                    position_xray,
+                                                    enable_scale,
+                                                    detector_offset_angle,
+                                                    dict_use_ref_angle,
+                                                    num_cpu)
+
+    prj = {}
+    prj_sum = 0
     for j in range(n_type):
         ele = elem_type[j]
         prj[ele] = np.sum(img4D_r[j]*atten3D[ele], axis=1)
@@ -2142,6 +2406,16 @@ def cal_atten_prj_at_angle(current_angle, img4D, param_angle_energy, position_de
     return res
 
 
+def update_dict_use_ref_at_angle(dict_use_ref, current_angle):
+    dict_use_ref_angle = deepcopy(dict_use_ref)
+    # need to rotate dict_use_ref['ref_3D']
+    if len(dict_use_ref_angle) > 0:
+        if dict_use_ref_angle['use_ref']:
+            ref_3D = dict_use_ref_angle['ref_3D']
+            n_ref = len(ref_3D)
+            for i in range(n_ref):
+                dict_use_ref_angle['ref_3D'][i] = rot3D(ref_3D[i], current_angle)
+    return dict_use_ref_angle
 
 def absorption_correction_mpi(elem, ref_tomo, angle_list, fpath_atten, n_iter, 
                                 num_cpu=4, save_tiff=True, fpath_save='./recon'):
