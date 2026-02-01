@@ -6,12 +6,10 @@ import os.path
 import numpy as np
 import h5py
 import itertools
-import xraylib
 import time
-from scipy import ndimage
-from numba import jit, njit, prange, cuda
+from numba import jit, njit, prange
 from .numba_util import *
-from .image_util import *
+from .cuda import forward_emission_batch, cal_atten_cuda
 from .util import *
 from skimage import io
 from tqdm import tqdm, trange
@@ -23,11 +21,7 @@ from copy import deepcopy
 import warnings
 warnings.filterwarnings('ignore')
 
-try:
-    import atten_cuda # C, CUDA compiled function for XRF attenuation calculation
-    atten_cuda_available = True
-except:
-    atten_cuda_available = False
+
 
 try:
     import torch
@@ -94,6 +88,26 @@ def maximum_likelihood(img2D, p, y, n_iter=10):
         A_old[np.isnan(A_old)] = 0
     img_cor = np.reshape(A_old, img2D.shape)
     return img_cor
+
+def mlem_cuda_local(C_init, atten, em_cs, I, theta, n_iter):
+    """
+    torch::Tensor C_init,   // (n_ref, H, W)
+    torch::Tensor atten,    // (n_angle, H, W)
+    torch::Tensor em_cs,    // (n_angle, n_ref)
+    torch::Tensor theta,    // (n_angle)
+    torch::Tensor I,        // (n_angle, W)
+    """
+    C = C_init.clone();
+    ones = torch.ones_like(I)
+    sens = torch.backward_emission(atten, ones, em_cs, theta)
+    for iter in range(n_iter):
+        Pf = atten_cuda.forward_emission(atten, C, em_cs, theta);
+        Pf.clamp_min_(1e-6)
+        ratio = I / Pf;
+        back = atten_cuda.backward_emission(atten, ratio, em_cs, theta);
+        C.mul_(back).div_(sens);
+        C.clamp_min_(0.0);
+    return C.cpu().numpy()
 
 
 def mlem_matrix(img2D, p, y, n_iter=10):
@@ -409,6 +423,59 @@ def re_projection_with_emission_and_attenuation(img3D, angle_list, param=None, r
                 xrf_r = rot3D(img_xrf, angle_list[i_angle])
                 xrf_r = xrf_r * atten_coef[i_angle]
                 prj[i_angle] = np.sum(xrf_r, axis=1)
+    return prj
+
+def re_projection_cuda(img3D, angle_list, param=None, rho_compound=1,
+                    atten_coef=None, elem='Ni', use_ref=False, device='cuda'):
+    '''
+    calculate the xrf emission of the 2D projection from a 3D volume at all angles
+    param contains the mass density (rho), pixel size (pix) and emission cross-section (em_cs)
+
+    xrf(pixel) = concentration(pixel) * cs * rho * pixel_size
+
+    if use_ref = True, it will read emission cross-section value from:
+        param['em_cs']['Ni_ref1']
+        param['em_cs']['Ni_ref2']
+
+    Input:
+    img3D: (sli, H, W), or (n_ref, sli, H, W)
+    angle_list: (n_angle,)
+    atten_coef: (n_angle, sli, H, W)
+    '''
+    if param is None:
+        prj = re_projection(img3D, angle_list, ax=1)
+        return prj
+
+    img3D = img3D * rho_compound
+    if len(img3D.shape) == 3:
+        img3D = img3D[np.newaxis] # (1, sli, H, W)
+
+    C = torch.tensor(img3D, dtype=torch.float, device=device)
+
+    n_angle = len(angle_list)
+    n_ref, n_sli, H, W = C.shape
+
+    if atten_coef is None:
+        atten_cuda = torch.ones(n_angle, n_sli, H, W, dtype=torch.float, device=device)
+    else:
+        if len(atten_coef.shape) == 3:
+            atten_coef = atten_coef[:, np.newaxis]
+        atten_cuda = torch.tensor(atten_coef, dtype=torch.float, device=device)
+    theta_cuda = torch.tensor(angle_list/180.*np.pi, dtype=torch.float, device=device)
+
+    pix = param['pix']
+    em_cs_dict = param['em_cs']
+
+    if use_ref:
+        em = np.zeros([n_angle, n_ref])
+        for i in range(n_ref):
+            em[:, i] = em_cs_dict[f'{elem}_ref{i+1}'] * pix
+    else:
+        em = em_cs_dict[elem] * pix
+        em = em.reshape((len(em), 1))
+    em_cs_cuda = torch.tensor(em, dtype=torch.float, device=device)
+    prj = forward_emission_batch(atten_cuda, C, em_cs_cuda, theta_cuda)
+    prj = prj.cpu().numpy()
     return prj
 
 def generate_detector_mask(alfa0, theta0, leng0):
@@ -1217,8 +1284,8 @@ def generate_H_from_atten_coef(atten_list, theta_list):
         H = np.zeros([s[2], s[1] * s[2]])
         for col in range(s[2]):
             for row in range(s[1]):
-                p = row
-                q = col
+                p = col
+                q = row
                 cord = np.dot(T,[[p-cx],[q-cy]]) + [[cx],[cy]]
                 if ((cord[0] > s[1]-1) or (cord[0] < 0) or (cord[1] > s[2]-1) or (cord[1] < 0)):
                     continue
@@ -2151,13 +2218,13 @@ def cal_xrf_atten_cuda(frac_4D, param_angle_energy, detector_offset_angle=0, dev
 
     atten_all_4D = torch.zeros_like(mu_all_elem_cuda).to(device) # (5, 75, 100, 100)
 
-    if atten_cuda_available: # using C, CUDA compiled function
+    try: # using C, CUDA compiled function
         n_row = s_mu[-2]
         length_key = str(n_row)
         mask = torch.tensor(mask3D[length_key], dtype=torch.float32).to(device)
-        atten_cuda.atten_cuda(mu_all_elem_cuda, mask, atten_all_4D)
+        cal_atten_cuda(mu_all_elem_cuda, mask, atten_all_4D)
         torch.cuda.synchronize()
-    else:
+    except:
         mask3D_cuda = {}
         for k in mask3D.keys():
             mask3D_cuda[k] = torch.tensor(mask3D[k], dtype=torch.float).to(device)
@@ -2201,7 +2268,7 @@ def compose_cs_incident_xray_with_reference(ref_3D, ref_cs, ref_comp):
 
 
 @njit(parallel=True, fastmath=True)
-def generate_H_jit(tomo3D_shape, theta, atten3D, H_tot, H_zero):
+def generate_H_jit(s_3D, theta, atten3D, H_tot, H_zero):
 
     """
     Generate matriz H and I for solving eqution: H*C=I
@@ -2211,6 +2278,7 @@ def generate_H_jit(tomo3D_shape, theta, atten3D, H_tot, H_zero):
 
     Parameters:
     -----------
+    s_3D: 3D tomo shape, e.g, (120, 200, 200)
 
     elem_type: chars
         e.g. elem_type='Gd'
@@ -2230,7 +2298,7 @@ def generate_H_jit(tomo3D_shape, theta, atten3D, H_tot, H_zero):
     # H_tot.shape = (n * s[2], s[1] * s[2])
     # H_zero.shape = (s[2], s[1] * s[2])
     num = len(theta)
-    s = tomo3D_shape
+    s = s_3D
     cx = (s[2]-1) / 2.0       # center of col
     cy = (s[1]-1) / 2.0       # center of row
     #H_tot = np.zeros([s[2]*num, s[2]*s[2]])
@@ -2248,19 +2316,20 @@ def generate_H_jit(tomo3D_shape, theta, atten3D, H_tot, H_zero):
             for row in range(s[1]):
                 p = row
                 q = col
-                #cord = np.dot(T,[[p-cx],[q-cy]]) + [[cx],[cy]]
-                t0 = T00 * (p-cx) + T01 * (q-cy) + cx
-                t1 = T10 * (p-cx) + T11 * (q-cy) + cy
-                cord = [t0, t1]
-                if ((cord[0] > s[1]-1) or (cord[0] < 0) or (cord[1] > s[2]-1) or (cord[1] < 0)):
+                # in image coordinate, (row, col) -->(x, y) (conventaional coordinate) 
+                #cord = np.dot(T,[[p-cy],[q-cx]]) + [[cy],[cx]] 
+                t0 = T00 * (p-cy) + T01 * (q-cx) + cy # row
+                t1 = T10 * (p-cy) + T11 * (q-cx) + cx # col
+                #cord = [t0, t1]
+
+                if (t0 > s[1] - 1) or (t0 < 0) or (t1 > s[2] - 1) or (t1 < 0):
                     continue
-                
-                r_frac = cord[0] - np.floor(cord[0])
-                c_frac = cord[1] - np.floor(cord[1])
-                r_up = int(np.floor(cord[0]))
-                r_down = int(np.ceil(cord[0]))
-                c_left = int(np.floor(cord[1]))
-                c_right = int(np.ceil(cord[1]))
+                r_frac = t0 - np.floor(t0)
+                c_frac = t1 - np.floor(t1)
+                r_up = int(t0)
+                r_down = r_up + 1
+                c_left = int(t1)
+                c_right = c_left + 1
 
                 ul = r_up * s[2] + c_left
                 ur = r_up * s[2] + c_right
@@ -2278,6 +2347,47 @@ def generate_H_jit(tomo3D_shape, theta, atten3D, H_tot, H_zero):
 
     return H_tot
 
+
+@njit(parallel=True)
+def generate_H_jit2(
+    atten3D,      # (n_angle, H, W)
+    em_cs,        # (n_angle, n_ref)
+    theta,        # (n_angle,)
+):
+    n_angle, H, W = atten3D.shape
+    n_ref = em_cs.shape[1]
+
+    cx = (W - 1) / 2.0
+    cy = (H - 1) / 2.0
+
+    # H maps (n_ref * H * W) → (n_angle * W)
+    H_tot = np.zeros((n_angle * W, n_ref * H * W), dtype=np.float32)
+
+    for i in prange(n_angle):
+        c = np.cos(-theta[i])
+        s = np.sin(-theta[i])
+        for q in range(W):            # detector bin
+            row_out = i * W + q
+            for r in range(H):        # image row
+                # ----- rotation (IMAGE COORDINATES) -----
+                x = c * (r - cy) - s * (q - cx) + cy  # row
+                y = s * (r - cy) + c * (q - cx) + cx  # col
+                if x<0 or x>H-1 or y<0 or y>W-1:
+                    continue
+                x0 = int(x)
+                y0 = int(y)
+                dx = x - x0
+                dy = y - y0
+                att = atten3D[i, r, q]
+                for j in range(n_ref):
+                    w = em_cs[i, j] * att
+                    base = j * H * W
+                    # ----- bilinear interpolation -----
+                    H_tot[row_out, base + x0 * W + y0]       += w * (1 - dx) * (1 - dy)
+                    H_tot[row_out, base + x0 * W + y0 + 1]   += w * (1 - dx) * dy
+                    H_tot[row_out, base + (x0 + 1) * W + y0] += w * dx * (1 - dy)
+                    H_tot[row_out, base + (x0 + 1) * W + y0 + 1] += w * dx * dy
+    return H_tot
 
 
 def smooth_filter(img, filter_size=3):

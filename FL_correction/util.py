@@ -78,7 +78,7 @@ def load_recon(fn_recon, id_iter='all'):
     for fn in fn_list:
         fn_short = fn.split('/')[-1]
         tmp = fn_short.split('_')
-        ele = tmp[1]
+        ele = tmp[0]
         it = int(tmp[-1].split('.')[0])
         img = io.imread(fn)
         if it not in recon.keys():
@@ -186,6 +186,7 @@ def read_recon_all_elem(fn_root, iter_id, elem_type):
         recon4D[i] = tmp
     return recon4D
 
+"""
 def save_recon(fn_root, recon_cor, elem_type, iter_id):
     from skimage import io
     fsave_root = fn_root + f'/recon'
@@ -197,6 +198,21 @@ def save_recon(fn_root, recon_cor, elem_type, iter_id):
     for i, elem in enumerate(elem_type):
         fsave_tiff = fn_root + f'/recon/{elem}_iter_{iter_id:02d}.tiff'
         io.imsave(fsave_tiff, recon_cor[i].astype(np.float32))
+"""
+
+def save_recon(rec_dict, fn_root, idx=None):
+    fsave_recon = fn_root + '/recon'
+    os.makedirs(fsave_recon, exist_ok=True)
+    iters = len(rec_dict)
+    if idx is None:
+        for idx in range(iters):
+            for k in rec_dict[idx].keys():
+                fs = fsave_recon + f'/{k}_iter_{idx:02d}.tiff'
+                io.imsave(fs, rec_dict[idx][k].astype(np.float32))
+    else:
+        for k in rec_dict[idx].keys():
+            fs = fsave_recon + f'/{k}_iter_{idx:02d}.tiff'
+            io.imsave(fs, rec_dict[idx][k].astype(np.float32))
 
 
 def inspect_recon(recon_raw, iter_id, fn_root, elem, angle_list, ang_idx=0, sli=None):

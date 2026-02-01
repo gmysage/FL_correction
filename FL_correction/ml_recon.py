@@ -73,6 +73,88 @@ def rot_img_general(img, theta, device='cpu', dtype=torch.float32):
     img_r = F.grid_sample(img, grid, align_corners=False)
     return img_r
 
+def torch_rotate_image(img, theta, mode="bilinear"):
+    """
+    Rotate image(s) by angle theta (radians).
+
+    Parameters
+    ----------
+    img : torch.Tensor
+        Shape (H, W) or (N, H, W)
+    theta : float or torch.Tensor
+        Rotation angle in radians
+    mode : str
+        'bilinear' or 'nearest'
+
+    Returns
+    -------
+    rotated : torch.Tensor
+        Same shape as input
+    """
+
+    # -----------------------------
+    # Normalize input shape
+    # -----------------------------
+    if img.dim() == 2:
+        img = img.unsqueeze(0)   # (1, H, W)
+        squeeze_back = True
+    elif img.dim() == 3:
+        squeeze_back = False
+    else:
+        raise ValueError("img must have shape (H,W) or (N,H,W)")
+
+    N, H, W = img.shape
+    device = img.device
+    dtype = img.dtype
+
+    # -----------------------------
+    # Make batch + channel explicit
+    # -----------------------------
+    img = img.unsqueeze(1)  # (N, 1, H, W)
+
+    # -----------------------------
+    # Rotation matrix
+    # -----------------------------
+    if not torch.is_tensor(theta):
+        theta = torch.tensor(theta, device=device, dtype=dtype)
+
+    cos_t = torch.cos(theta)
+    sin_t = torch.sin(theta)
+
+    # affine matrix: (N, 2, 3)
+    affine = torch.zeros((N, 2, 3), device=device, dtype=dtype)
+    affine[:, 0, 0] = cos_t
+    affine[:, 0, 1] = -sin_t
+    affine[:, 1, 0] = sin_t
+    affine[:, 1, 1] = cos_t
+
+    # -----------------------------
+    # Grid + sampling
+    # -----------------------------
+    grid = F.affine_grid(
+        affine,
+        size=img.shape,
+        align_corners=True
+    )
+
+    rotated = F.grid_sample(
+        img,
+        grid,
+        mode=mode,
+        padding_mode="zeros",
+        align_corners=True
+    )
+
+    # -----------------------------
+    # Restore shape
+    # -----------------------------
+    rotated = rotated.squeeze(1)  # (N, H, W)
+
+    if squeeze_back:
+        rotated = rotated.squeeze(0)  # (H, W)
+
+    return rotated
+
 def torch_xrf_sino2D_with_reference(img4d_cuda, angle_list, em_cs_ref, rho_sli,
                               pix, atten2D_at_angle=[1], device='cuda'):
     """
@@ -872,3 +954,120 @@ def FL_cal_x_atten_with_ref_elem(guess_cuda, angle_list, v_other, cs_ref, rho, p
         x_ray[i_angle] = x_row.squeeze(0)
         # --- end vectorized section ---
     return x_ray
+
+
+def torch_cal_xray_atten(
+    C,            # (n_ref, H, W)
+    C_other,      # (H, W)
+    theta_list,   # (n_angle,)
+    cs_ref,       # (n_angle, n_ref)
+    rho,          # (H, W)
+    pix
+):
+    device = C.device
+    dtype = C.dtype
+
+    n_ref, H, W = C.shape
+    n_angle = theta_list.numel()
+
+    C_sum = C.sum(dim=0) + C_other
+    C_frac = C / (C_sum.max() + 1e-9)
+
+    atten_xray = torch.empty((n_angle, H, W), device=device, dtype=dtype)
+
+    for i in range(n_angle):
+        frac_angle = torch_rotate_image(C_frac, theta_list[i])  # must be grid_sample-based
+
+        mu = torch.zeros((H, W), device=device, dtype=dtype)
+        for j in range(n_ref):
+            mu += cs_ref[i, j] * frac_angle[j] * rho * pix
+
+        f = torch.clamp(1.0 - mu, min=1e-6)
+
+        rev_f = torch.flip(f, dims=[0])
+        rev_prod = torch.cumprod(rev_f, dim=0)
+
+        body = torch.flip(rev_prod[:-1], dims=[0])
+        ones = torch.ones((1, W), device=device, dtype=dtype)
+
+        atten_xray[i] = torch.cat([body, ones], dim=0)
+
+    return atten_xray
+
+
+
+def torch_cal_xray_atten_vectorize(
+    C,          # (n_ref, H, W)
+    C_other,    # (H, W)
+    theta,      # (n_angle,)
+    cs_ref,     # (n_angle, n_ref)
+    rho,        # (H, W)
+    pix         # scalar
+):
+    """
+    Fully vectorized, differentiable X-ray attenuation
+    Returns: atten_xray (n_angle, H, W)
+    """
+
+    device = C.device
+    dtype = C.dtype
+
+    n_ref, H, W = C.shape
+    n_angle = theta.numel()
+
+    # ======================================================
+    # Step 1: volume fraction
+    # ======================================================
+    C_sum = C.sum(dim=0) + C_other            # (H, W)
+    C_frac = C / (C_sum.max() + 1e-8)         # (n_ref, H, W)
+
+    # ======================================================
+    # Step 2: rotate ALL angles at once
+    # ======================================================
+    # Expand to (n_angle, n_ref, H, W)
+    C_frac = C_frac.unsqueeze(0).expand(n_angle, -1, -1, -1)
+
+    # ---- build affine matrices ----
+    cos_t = torch.cos(theta)
+    sin_t = torch.sin(theta)
+
+    affine = torch.zeros((n_angle, 2, 3), device=device, dtype=dtype)
+    affine[:, 0, 0] = cos_t
+    affine[:, 0, 1] = -sin_t
+    affine[:, 1, 0] = sin_t
+    affine[:, 1, 1] = cos_t
+
+    # ---- grid + sample ----
+    grid = F.affine_grid(
+        affine,
+        size=(n_angle, 1, H, W),
+        align_corners=True
+    )
+    # reshape for grid_sample: (N, C, H, W)
+    frac_rot = F.grid_sample(
+        C_frac.reshape(n_angle * n_ref, 1, H, W),
+        grid.repeat_interleave(n_ref, dim=0),
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=True
+    )
+    frac_rot = frac_rot.reshape(n_angle, n_ref, H, W)
+    # ======================================================
+    # Step 3: compute μ(x, y, angle)
+    # ======================================================
+    # cs_ref: (n_angle, n_ref) → (n_angle, n_ref, 1, 1)
+    mu = (frac_rot * cs_ref[:, :, None, None]).sum(dim=1) * rho * pix  # (n_angle, H, W)
+    # ======================================================
+    # Step 4: cumulative attenuation (NO Python loops)
+    # ======================================================
+    f = torch.clamp(1.0 - mu, min=1e-8)                            # (n_angle, H, W)
+
+    # reverse row direction
+    f_rev = torch.flip(f, dims=[1])            # flip H
+    # cumulative product
+    cumprod = torch.cumprod(f_rev, dim=1)
+    # shift & restore
+    atten_xray = torch.ones_like(f)
+    atten_xray[:, :-1, :] = torch.flip(cumprod[:, 1:, :], dims=[1])
+
+    return atten_xray

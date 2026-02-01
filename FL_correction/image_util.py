@@ -12,6 +12,24 @@ from tqdm import tqdm, trange
 from functools import partial
 import bm3d
 
+def circle_mask(img3D, ratio=1, val=0):
+    s = img3D.shape
+    if len(s) == 2:
+        img3D = img3D[np.newaxis]
+    s = img3D.shape
+    im = np.zeros_like(img3D)
+    x = np.arange(s[0])
+    y = np.arange(s[2])
+    X, Y = np.meshgrid(y, x)
+    X = X / s[2]
+    Y = Y / s[1]
+    mask = np.float32(((X-0.5)**2 + (Y-0.5)**2)<(ratio/2)**2)
+    mask_minus = 1 - mask
+    for i in range(s[0]):
+        im[i] = img3D[i] * mask + (mask_minus) * val
+    return im
+
+
 
 def pad4d(img_stack, thick=0, direction=0):
     """
@@ -161,7 +179,7 @@ def rot3D_dict_img(img_dict, rot_angle):
     return dict_rot
 
 
-def rot3D(img_raw, rot_angle, order=1):
+def rot3D(img_raw, rot_angle, order=1, reshape=False):
 
     """
     Rotate 2D or 3D or 4D(set of 3D) image with angle = rot_angle
@@ -189,13 +207,15 @@ def rot3D(img_raw, rot_angle, order=1):
     if np.mod(rot_angle, 90) == 0:
         order = 0
     if len(s) == 2:    # 2D image
-        img_rot = ndimage.rotate(img, rot_angle, order=order, reshape=False)
+        img_rot = ndimage.rotate(img, rot_angle, order=order, reshape=reshape)
     elif len(s) == 3:  # 3D image, rotating along axes=0
-        img_rot = ndimage.rotate(img, rot_angle, axes=[1,2], order=order, reshape=False)
+        img_rot = ndimage.rotate(img, rot_angle, axes=[1,2], order=order, reshape=reshape)
     elif len(s) == 4:  # a set of 3D image
-        img_rot = np.zeros(img.shape)
+        img_rot = []
         for i in trange(s[0]):
-            img_rot[i] = ndimage.rotate(img[i], rot_angle, axes=[1,2], order=order, reshape=False)
+            new_img = ndimage.rotate(img[i], rot_angle, axes=[1,2], order=order, reshape=reshape)
+            img_rot.append(new_img)
+        img_rot = np.array(img_rot)
     else:
         raise ValueError('Error! Input image has dimension > 4')
     img_rot[img_rot < 0] = 0
