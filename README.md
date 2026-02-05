@@ -4,13 +4,15 @@ This script contains functions to correct the self-absorption on XRF tomography
 
 ## Installation
 
+Note: need to intall pytorch with cuda enabled
 ```
 git clone https://github.com/gmysage/FL_correction.git
+pip install -v -e .
 
 ```
 
 ## License
-[BSD]
+Non-commercial
 
 
 ## Acknowledgement

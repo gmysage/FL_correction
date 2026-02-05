@@ -12,7 +12,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         "numpy>=1.24",
-        "torch>=1.9",
+        #"torch>=1.9",
         "tqdm",
         "xraylib",
         "scikit-image",
