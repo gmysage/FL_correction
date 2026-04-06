@@ -11,8 +11,8 @@ def load_default_3DUNet_model(id_model=None, device='cuda'):
     fn_model_root = spec.submodule_search_locations[0] # e.g. '/data/FL_correction/FL'
 
     if id_model is None:
-        #model_path = fn_model_root + '/ml_lib/saved_model/best_3dcnn_0048.pth'
-        model_path = fn_model_root + '/ml_lib/saved_model/refaware3dUnet_0263.pth'
+        model_path = fn_model_root + '/ml_lib/saved_model/best_3dcnn_0048.pth'
+        #model_path = fn_model_root + '/ml_lib/saved_model/refaware3dUnet_0263.pth'
     else:
         fn_model = fn_model_root + '/ml_lib/saved_model/saved_model_UNet'
         model_list = np.sort(glob.glob(fn_model + '/*.pth'))

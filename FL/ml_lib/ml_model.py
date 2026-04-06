@@ -127,6 +127,128 @@ class RefAware3DUNet(nn.Module):
 
 ###################### END 3D U-Net #####################
 
+
+##################### general 3D U-Net ##################
+class RefAware3DUNet_g(nn.Module):
+    def __init__(
+        self,
+        n_ref,
+        emb_dim=8,
+        base_ch=32,
+        n_levels=2   # <---- NEW: number of down/up stages
+    ):
+        super().__init__()
+
+        assert n_levels >= 1, "Need at least 1 level"
+
+        self.n_ref = n_ref
+        self.emb = nn.Embedding(n_ref, emb_dim)
+
+        self.alpha = nn.Parameter(torch.tensor(0.05))
+        in_ch = 1 + emb_dim
+
+        # -----------------------------
+        # Encoder path
+        # -----------------------------
+        self.inc = ConvBlock3D(in_ch, base_ch)
+
+        self.down = nn.ModuleList()
+        ch = base_ch
+
+        for i in range(n_levels):
+            self.down.append(
+                Down3D(ch, ch * 2)
+            )
+            ch *= 2
+
+        # -----------------------------
+        # Bottleneck
+        # -----------------------------
+        self.mid = ConvBlock3D(ch, ch)
+
+        # -----------------------------
+        # Decoder path
+        # -----------------------------
+        self.up = nn.ModuleList()
+
+        for i in range(n_levels):
+            self.up.append(
+                Up3D(ch, ch // 2)
+            )
+            ch //= 2
+
+        # -----------------------------
+        # Output layer
+        # -----------------------------
+        self.outc = nn.Conv3d(base_ch, 1, kernel_size=1)
+
+        self.n_levels = n_levels
+
+    # -------------------------------------------------
+    # Utilities to freeze / unfreeze encoder
+    # -------------------------------------------------
+    def freeze_encoder(self):
+        for m in [self.inc] + list(self.down):
+            for p in m.parameters():
+                p.requires_grad = False
+
+    def unfreeze_encoder(self):
+        for m in [self.inc] + list(self.down):
+            for p in m.parameters():
+                p.requires_grad = True
+
+    def freeze_embedding(self):
+        for p in self.emb.parameters():
+            p.requires_grad = False
+
+    # -------------------------------------------------
+    # Forward
+    # -------------------------------------------------
+    def forward(self, x, ref_idx):
+        """
+        x:       (B, 1, D, H, W)
+        ref_idx: scalar or (B,)
+        """
+        B, _, D, H, W = x.shape
+        x0 = x
+
+        # ----- reference embedding -----
+        emb = self.emb(ref_idx)           # (B, E)
+        emb = emb.view(B, -1, 1, 1, 1)
+        emb = emb.expand(-1, -1, D, H, W)
+
+        x = torch.cat([x, emb], dim=1)
+
+        # ----- Encoder -----
+        skips = []
+
+        x = self.inc(x)
+        skips.append(x)
+
+        for down in self.down:
+            x = down(x)
+            skips.append(x)
+
+        # Last element in skips corresponds to bottleneck input
+        skips = skips[:-1]   # remove deepest (not used for skip)
+
+        # ----- Bottleneck -----
+        x = self.mid(x)
+
+        # ----- Decoder -----
+        for i, up in enumerate(self.up):
+            skip = skips[-(i + 1)]
+            x = up(x, skip)
+
+        # ----- Output -----
+        res = self.outc(x)
+
+        alpha = torch.clamp(self.alpha, 0.0, 0.1)
+
+        return x0 + alpha * res
+
+    ##############################################################
+
 class RefAware3DCNN(nn.Module):
     def __init__(self, n_ref, emb_dim=8, hidden=32):
         super().__init__()

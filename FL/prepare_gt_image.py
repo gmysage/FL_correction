@@ -1,9 +1,10 @@
 from numba import jit, njit, prange
 import numpy as np
 from tqdm import trange
-from skimage import filters
-from skimage import morphology
+from skimage import morphology, io, filters
 from skimage.morphology import disk
+import porespy as ps
+import glob
 
 def circle_mask(img, ratio=1, val=0):
     s = img.shape
@@ -264,14 +265,17 @@ def gen_gt_image_sphere():
     radius_range=[5, 40]
     cen_ratio=0.9
     img_slice = []
-    for i in trange(1000): # 1000 3D structure
+    for i in trange(500): # 1000 3D structure
         n_ball = np.random.randint(30, 100)
+        """
         if np.random.random() > 0.5:
             allow_overlap = True 
         else:
             allow_overlap = False
-        g1 = np.random.uniform(-1, 0.5)
-        g2 = np.random.uniform(0, 1.5)
+        """
+        allow_overlap=False
+        g1 = np.random.uniform(0.3, 0.5)
+        g2 = np.random.uniform(0.6, 1.5)
         gradient_range = np.sort([g1, g2])
         val_range = np.sort(np.random.uniform(1, 10, size=2))
         ball, n = gen_3D_ball(shape3D, 
@@ -332,7 +336,25 @@ def gen_gt_image_poly():
         img_slice2.append(img3D[0])
         fsave = f'{fn_root}/img_gt_{i+idx_start:04d}.tiff'
         io.imsave(fsave, img3D.astype(np.float32))
-    img_slice2 = np.array(img_slice2) 
+    img_slice2 = np.array(img_slice2)
+
+
+def gen_gt_image_porespy():
+    fn_root = '/data/FL_correction/FL_2/gt_image_porespy'
+    idx_start = 0
+    shape3D = (32, 200, 200)
+    img_slice3 = []
+    for i in trange(1000):
+        n1, n2, n3 = np.random.randint(1, 4, 3)
+        im_s = ps.generators.blobs(shape=shape3D, porosity=None, blobiness=[n1, n2, n3])
+        c_ratio = np.random.uniform(0.6, 0.98)
+        img3D = circle_mask(im_s, ratio=c_ratio, val=0)
+
+        img_slice3.append(img3D[0])
+        fsave = f'{fn_root}/img_gt_{i + idx_start:04d}.tiff'
+        io.imsave(fsave, img3D.astype(np.float32))
+    img_slice3 = np.array(img_slice3)
+
 
 
 def gen_noisy_image():
@@ -341,12 +363,13 @@ def gen_noisy_image():
     n = len(fn_gt)
     device = 'cuda'
     for i in trange(n):
-        angle_e = int(np.random.uniform(120, 180))
+        #angle_e = int(np.random.uniform(160, 180))
+        angle_e = 180
         n_inv = np.random.randint(2, 4)
         angle_list = np.arange(0, angle_e, n_inv)
         fn_id = fn_gt[i].split('/')[-1][:-5].split('_')[-1]
         img3D = io.imread(fn_gt[i])
-        prj = re_projection_cuda(img3D, 
+        prj = FL.re_projection_cuda(img3D,
                                     angle_list, 
                                     param=None, 
                                     rho_compound=1, 
@@ -358,8 +381,8 @@ def gen_noisy_image():
         ph = np.random.randint(1000, 5000)
         C_init = np.ones_like(img3D[np.newaxis])
         prj_n = np.random.poisson(prj* ph)/ph   
-        n_iter = np.random.randint(20, 50)                    
-        rec = torch_mlem_recon_batch(C_init,  # (n_ref, n_sli, H, W)
+        n_iter = np.random.randint(50, 80)
+        rec = FL.torch_mlem_recon_batch(C_init,  # (n_ref, n_sli, H, W)
                     prj_n,           # (n_angle, n_sli, W)
                     angle_list,     # (n_angle)
                     atten = None,   # (n_angle, n_sli, H, W)
@@ -369,7 +392,7 @@ def gen_noisy_image():
                     n_iter = n_iter,
                     beta = 1e-3,
                     delta = 0.01,
-                    device = 'cuda'
+                    device = device
                     )
         rec = rec[0]
         fsave_rec = f'/data/FL_correction/FL_2/noisy_image/img_noise_{fn_id}.tiff'
@@ -396,7 +419,7 @@ def gen_noisy_super_fast_tomo_image():
         img3D = io.imread(fn_gt[i])
         prj_sub = []
         for delta_angle in d_angle:
-            prj_d = re_projection_cuda(img3D, 
+            prj_d = FL.re_projection_cuda(img3D,
                                         angle_list+delta_angle, 
                                         param=None, 
                                         rho_compound=1, 
@@ -414,7 +437,7 @@ def gen_noisy_super_fast_tomo_image():
         n_iter = np.random.randint(20, 30)  
 
         if i%2 == 0:    # recon using mlem            
-            rec = torch_mlem_recon_batch(C_init,  # (n_ref, n_sli, H, W)
+            rec = FL.torch_mlem_recon_batch(C_init,  # (n_ref, n_sli, H, W)
                         prj_n,           # (n_angle, n_sli, W)
                         angle_list,     # (n_angle)
                         atten = None,   # (n_angle, n_sli, H, W)

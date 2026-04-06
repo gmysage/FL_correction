@@ -10,6 +10,7 @@ from multiprocessing import Pool, cpu_count
 from pystackreg import StackReg
 from tqdm import tqdm, trange
 from functools import partial
+from matplotlib.widgets import Slider
 import bm3d
 
 
