@@ -6,22 +6,22 @@ here = os.path.abspath(os.path.dirname(__file__))
 with open(os.path.join(here, "FL", "version.py")) as f:
     exec(f.read())
 
-try:
-    from torch.utils.cpp_extension import CUDAExtension, BuildExtension
-    ext_modules = [
+from torch.utils.cpp_extension import CUDAExtension, BuildExtension
+#conda_gxx = os.path.join(os.environ["CONDA_PREFIX"], "bin", "x86_64-conda-linux-gnu-g++")
+ext_modules = [
         CUDAExtension(
             name="FL.cuda_lib.atten_cuda",
             sources=[
                 "FL/cuda_lib/atten_cuda.cpp",
                 "FL/cuda_lib/atten_cuda_kernel.cu",
             ],
-            extra_compile_args={"cxx": ["-O2"], "nvcc": ["-O2"]},
+            extra_compile_args={
+                "cxx": ["-O2"], 
+                "nvcc": ["-O2"]
+                },
         )
     ]
-    cmdclass = {"build_ext": BuildExtension}
-except ModuleNotFoundError:
-    ext_modules = []
-    cmdclass = {}
+cmdclass = {"build_ext": BuildExtension}
 
 setup(
     name="FL",
@@ -35,6 +35,9 @@ setup(
         "scikit-image",
         "scipy",
         "matplotlib",
+        "h5py",
+        "pystackreg",
+        "bm3d",
     ],
     ext_modules=ext_modules,
     cmdclass=cmdclass,
