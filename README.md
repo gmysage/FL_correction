@@ -9,6 +9,8 @@ Note: need to intall pytorch with cuda enabled
 git clone https://github.com/gmysage/FL_correction.git
 pip install -v -e .
 
+or if compiling using specific conda environment with torch installed, use command:
+pip install -v -e . --no-build-isolation
 ```
 
 ## License
