@@ -10,4 +10,8 @@ from .atten_cuda import (
     #huber_grad_batch
 )
 
-from .autograd import forward_emission_autograd, forward_emission_batch_autograd
+from .autograd import (
+    forward_emission_autograd,
+    forward_emission_batch_autograd,
+    cal_atten_autograd
+)

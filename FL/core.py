@@ -32,7 +32,8 @@ def cal_xrf_atten_at_angles(frac_4D,
     elem_type = param['elem_type']  # ['Ni', 'Co', 'Mn']
     n_ele = len(elem_type)
     for ang_id in trange(n_angle):
-        theta_cuda = torch.tensor(angle_list[ang_id]/180. * np.pi, device=device)
+        #theta_cuda = torch.tensor(angle_list[ang_id]/180. * np.pi, device=device)
+
         dict_use_ref_rotate = update_dict_use_ref_at_angle(dict_use_ref,
                                                            angle_list[ang_id]
                                                            )
@@ -40,7 +41,7 @@ def cal_xrf_atten_at_angles(frac_4D,
                                                         ang_id, 
                                                         dict_use_ref_rotate
                                                         )
-        frac_4D_rot = torch_rotate_image_nd(frac_4D, theta_cuda)
+        frac_4D_rot = torch_rotate_image_nd(frac_4D, angle_list[ang_id])
         torch.cuda.synchronize()
         atten_xrf = torch_xrf_atten_3D(frac_4D_rot, 
                                         param_angle_energy, 
@@ -57,14 +58,15 @@ def cal_xray_atten_at_angles(frac_4D,
                             angle_list, 
                             dict_use_ref={},
                             fsave='./Angle_prj',
-                            ):
+                            return_flag=False):
     n_angle = len(angle_list)
     dtype = frac_4D.dtype
     device = frac_4D.device
     elem_type = param['elem_type']  # ['Ni', 'Co', 'Mn']
-
+    atten_slices = []
     for ang_id in trange(n_angle):
-        theta_cuda = torch.tensor(angle_list[ang_id]/180.*np.pi, device=device)
+        #theta_cuda = torch.tensor(angle_list[ang_id]/180.*np.pi, device=device)
+        angle_cuda = torch.tensor(angle_list[ang_id], device=device)
         dict_use_ref_rotate = update_dict_use_ref_at_angle(dict_use_ref,
                                                            angle_list[ang_id]
                                                            )
@@ -72,13 +74,19 @@ def cal_xray_atten_at_angles(frac_4D,
                                                         ang_id, 
                                                         dict_use_ref_rotate
                                                         )
-        frac_4D_rot = torch_rotate_image_nd(frac_4D, theta_cuda)
+        frac_4D_rot = torch_rotate_image_nd(frac_4D, angle_cuda)
         atten_xray = torch_xray_atten_3D(frac_4D_rot, 
                                         param_angle_energy, 
-                                        dict_use_ref_rotate={}
-                                        )
+                                        dict_use_ref_rotate, # previously, it is wrong, it always set to {}
+                                        flag_detach=False)
+        if return_flag:
+            atten_slices.append(atten_xray)
+        atten_xray = atten_xray.detach().cpu().numpy()
         for i, elem in enumerate(elem_type):
             write_attenuation_xray(elem, atten_xray[i], ang_id, fsave)
+    if return_flag:
+        atten_xray_4D = torch.stack(atten_slices, dim=0)
+        return atten_xray_4D
 
 
 def cal_total_atten_at_angles(fsave, param):
@@ -209,6 +217,10 @@ def cal_frac(*args, scale_range=[0.02, 0.98], enable_scale=True, scale_limit=0.9
     res['pix_max'] = pix_max_update
     res['img_mask'] = img_mask
     return res
+
+def load_global_mask(Mask3D):
+    global mask3D
+    mask3D = Mask3D
 
 def load_param(fn):
 

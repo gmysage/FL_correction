@@ -156,6 +156,7 @@ def example_mlem_cuda(X, A, B, iter_num=10):
     #R_T = new_cuda_array((n, 1))
     X_new = new_cuda_array((n, 1))
     '''
+    I_tot = B.copy()
     I_tot = I_tot.reshape((len(I_tot), 1))
     y = I_tot
     B = cuda.to_device(I_tot.astype(np.float32))

@@ -19,7 +19,10 @@ torch::Tensor cal_atten_cuda(
     TORCH_CHECK(mask.dtype() == torch::kFloat32, "mask must be float32");
 
     // Allocate output tensor
-    auto out = torch::zeros_like(mu);
+    //auto out = torch::zeros_like(mu);
+    auto mu_c = mu.contiguous();
+    auto mask_c = mask.contiguous();
+    auto out = torch::zeros_like(mu_c);
 
     // Launch CUDA kernel
     atten_cuda_launcher(mu, mask, out);
@@ -27,6 +30,38 @@ torch::Tensor cal_atten_cuda(
     return out;
 }
 
+// Declare the launcher from the .cu file (added in 2026-7-20)
+void atten_cuda_backward_launcher(
+    torch::Tensor grad_out,
+    torch::Tensor mu,
+    torch::Tensor mask,
+    torch::Tensor grad_mu,
+    torch::Tensor grad_mask
+);
+
+// Python C++ API wrapper
+std::vector<torch::Tensor> cal_atten_backward_cuda(
+    torch::Tensor grad_out,
+    torch::Tensor mu,
+    torch::Tensor mask
+) {
+    TORCH_CHECK(grad_out.is_cuda(), "grad_out must be CUDA");
+    TORCH_CHECK(mu.is_cuda(), "mu must be CUDA");
+    TORCH_CHECK(mask.is_cuda(), "mask must be CUDA");
+
+    auto grad_mu = torch::zeros_like(mu);
+    auto grad_mask = torch::zeros_like(mask);
+
+    atten_cuda_backward_launcher(
+        grad_out.contiguous(),
+        mu.contiguous(),
+        mask.contiguous(),
+        grad_mu,
+        grad_mask
+    );
+
+    return {grad_mu, grad_mask};
+}
 
 // ================= New emission projectors =================
 // ---------------------------------------------------------
@@ -389,6 +424,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     py::arg("delta") = 0.01,
     "Batch MLEM reconstruction with optional Huber regularization (CUDA)"
     );
-
+    m.def(
+    "cal_atten_backward_cuda",
+    &cal_atten_backward_cuda,
+    "Backward attenuation CUDA"
+    );
 }
 

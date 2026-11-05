@@ -85,6 +85,101 @@ void atten_cuda_launcher(
     );
 }
 
+// ==========================================================
+// Backward Kernels (added in 2026-7-20)
+// ==========================================================
+
+__global__ void atten_backward_kernel(
+    const float* __restrict__ grad_out, // (K, Z, X, Y)
+    const float* __restrict__ mu,       // (K, Z, X, Y)
+    const float* __restrict__ mask,     // (Mz, Mx, My)
+    float* __restrict__ grad_mu,         // (K, Z, X, Y)
+    float* __restrict__ grad_mask,       // (Mz, Mx, My) - shared atomics
+    int K, int Z, int X, int Y,
+    int Mz, int Mx, int My
+) {
+    int k   = blockIdx.x;
+    int sli = blockIdx.y;
+    int row = blockIdx.z;
+    int col = threadIdx.x;
+
+    if (col >= Y) return;
+
+    int out_idx = ((k * Z + sli) * X + row) * Y + col;
+    float go = grad_out[out_idx];
+
+    int hz = Mz / 2;
+    int hx = Mx / 2;
+    int hy = My / 2;
+
+    float acc_grad_mu = 0.0f;
+
+    // Loop exactly mirroring the forward neighborhood mapping
+    for (int dz = 0; dz < Mz; dz++) {
+        int z = sli + dz - hz;
+        if (z < 0 || z >= Z) continue;
+
+        for (int dx = 0; dx < Mx; dx++) {
+            int x = row + dx;
+            if (x < 0 || x >= X) continue;
+
+            for (int dy = 0; dy < My; dy++) {
+                int y = col + dy - hy;
+                if (y < 0 || y >= Y) continue;
+
+                int mu_idx = ((k * Z + z) * X + x) * Y + y;
+                int mask_idx = (dz * Mx + dx) * My + dy;
+
+                // 1. Derivative w.r.t mu: accumulate (grad_output * mask)
+                acc_grad_mu += go * mask[mask_idx];
+
+                // 2. Derivative w.r.t mask: accumulate (grad_output * mu)
+                // Since multiple threads write to the same mask coordinate, use atomicAdd
+                if (grad_mask != nullptr) {
+                    float gm_val = go * mu[mu_idx];
+                    atomicAdd(&grad_mask[mask_idx], gm_val);
+                }
+            }
+        }
+    }
+
+    grad_mu[out_idx] = acc_grad_mu;
+}
+
+void atten_cuda_backward_launcher(
+    torch::Tensor grad_out,
+    torch::Tensor mu,
+    torch::Tensor mask,
+    torch::Tensor grad_mu,
+    torch::Tensor grad_mask
+) {
+    int K = mu.size(0);
+    int Z = mu.size(1);
+    int X = mu.size(2);
+    int Y = mu.size(3);
+
+    int Mz = mask.size(0);
+    int Mx = mask.size(1);
+    int My = mask.size(2);
+
+    dim3 blocks(K, Z, X);
+    dim3 threads(Y);
+
+    atten_backward_kernel<<<blocks, threads>>>(
+        grad_out.data_ptr<float>(),
+        mu.data_ptr<float>(),
+        mask.data_ptr<float>(),
+        grad_mu.data_ptr<float>(),
+        grad_mask.data_ptr<float>(),
+        K, Z, X, Y, Mz, Mx, My
+    );
+}
+
+
+
+
+
+
 // ==========================================
 // forward_emission_kernel
 // ==========================================

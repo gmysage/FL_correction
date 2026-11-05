@@ -35,27 +35,27 @@ def read_projection(angle_id, fpath_atten, elem):
 
 
 def read_attenuation_at_all_angle(angle_list, fpath_atten, elem, mode='all'):
-    '''
+    """
     mode:
     "all": read total attenuation from xrf and incident x-ray
     "fl": read fluorescent atten
     "xray": read incident x-ray attenuation
-    '''
-    print('reading attenuation files ...')
+    """
+    #print('reading attenuation files ...')
     n = len(angle_list)
     for i in trange(n):
         if mode == 'fl':
             if i == 0:
-                print('reading fl')
+                print('\nreading fl attenuation')
             tmp = read_attenuation_fl(i, fpath_atten, elem)
         elif mode == 'xray':
             tmp = read_attenuation_xray(i, fpath_atten, elem)
             if i == 0:
-                print('reading xray')
+                print('\nreading xray attenuation')
         else:
             tmp = read_attenuation(i, fpath_atten, elem)
             if i == 0:
-                print('reading full atten')
+                print('\nreading full attenuation files')
         if i == 0:
             s = tmp.shape
             coef_att4D = np.zeros((n, *s))
@@ -188,10 +188,11 @@ def load_recon(fn_recon):
     return recon, n_iter
 
 
-def save_recon(rec_dict, fn_root, idx=None, save_hdf=False):
-    fsave_recon = fn_root + '/recon'
+def save_recon(rec_dict, fn_root, prefix='recon', idx=None, save_hdf=False):
+    fsave_recon = fn_root + f'/{prefix}'
     #os.makedirs(fsave_recon, exist_ok=True)
     mk_directory(fsave_recon)
+    print(f'files saved to:{" " * 4}{fsave_recon}')
     iters = len(rec_dict)
     if idx is None:
         for idx in range(iters):

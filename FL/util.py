@@ -1,6 +1,4 @@
 from skimage import io
-
-# from examples.HXN_sparse_tomo.data_process_2025Q1 import init_guess
 from .image_util import *
 import numpy as np
 import os
@@ -88,7 +86,7 @@ def pre_treat(*args):
     """
 
     n = len(args)
-    if n == 1:                                    # one set of 4D or 3D data
+    if n == 1:  # one set of 4D or 3D data
         data = np.squeeze(np.array(args))
         if len(data.shape) == 4:
             data = rm_nan(data)
@@ -101,7 +99,7 @@ def pre_treat(*args):
         else:
             print('input should be either 3D or 4D data')
             return 0
-    if n > 1:                                     # a list of 3D or 2D data
+    if n > 1:   # a list of 3D or 2D data
         s = args[0].shape
         ss = [n] + [s[i] for i in range(len(s))]
         data = np.zeros(ss)

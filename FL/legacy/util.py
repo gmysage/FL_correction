@@ -1,7 +1,7 @@
 from skimage import io
 
 #from examples.HXN_sparse_tomo.data_process_2025Q1 import init_guess
-from .image_util import *
+from image_util import *
 import matplotlib.pyplot as plt
 import numpy as np
 import h5py

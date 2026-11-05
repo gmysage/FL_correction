@@ -4,15 +4,19 @@ import matplotlib.pyplot as plt
 from scipy.signal import medfilt2d
 from skimage.restoration import denoise_nl_means, estimate_sigma
 from skimage.transform import resize
+from skimage import io
 from skimage.filters import threshold_otsu, threshold_yen, threshold_multiotsu
 from skimage.filters import gaussian as gf
+from scipy.ndimage import gaussian_filter1d, gaussian_filter, map_coordinates
+from sklearn.cluster import MiniBatchKMeans
 from multiprocessing import Pool, cpu_count
 from pystackreg import StackReg
 from tqdm import tqdm, trange
 from functools import partial
 from matplotlib.widgets import Slider
 import bm3d
-
+import glob
+import os
 
 def pad4d(img_stack, thick=0, direction=0):
     """
@@ -243,6 +247,49 @@ def bin_ndarray(ndarray, new_shape=None, operation='mean'):
         ndarray = op(-1 * (i + 1))
     return ndarray
 
+def combine_img_stack(*args):
+    """
+    Combine multiple 3D image stacks into a single stack.
+
+    Parameters
+    ----------
+    *args : np.ndarray
+        Any number of 3D arrays with shape (n_slices, height, width).
+
+    Returns
+    -------
+    np.ndarray
+        Combined stack with shape
+        (sum(n_slices), height, width).
+
+    Raises
+    ------
+    ValueError
+        If no arrays are provided, if an input is not 3D,
+        or if the slice dimensions do not match.
+    """
+    if len(args) == 0:
+        raise ValueError("At least one image stack must be provided.")
+
+    # Validate inputs
+    slice_shape = None
+    for i, arr in enumerate(args):
+        arr = np.asarray(arr)
+
+        if arr.ndim != 3:
+            raise ValueError(
+                f"Input {i} is {arr.ndim}D, expected a 3D array."
+            )
+
+        if slice_shape is None:
+            slice_shape = arr.shape[1:]
+        elif arr.shape[1:] != slice_shape:
+            raise ValueError(
+                f"Input {i} has slice shape {arr.shape[1:]}, "
+                f"expected {slice_shape}."
+            )
+
+    return np.concatenate(args, axis=0)
 
 def align_img(img_ref, img, align_flag=1, method='translation'):
     '''
@@ -501,6 +548,7 @@ def rm_noise2(img, noise_level=0.02, filter_size=3):
     index = img_diff > noise_level
     img_m = img.copy()
     img_m[index] = img_s[index]
+    img_m[img_m<0] = 0
     return img_m
 
 
@@ -524,7 +572,7 @@ def rm_noise2_stack(img_stack, noise_level=0.02, filter_size=3):
     return img1
 
 
-def img_denoise_bm3d(img, sigma=0.01):
+def img_denoise_bm3d(img, sigma=None):
     try:
         import bm3d
         s = img.shape
@@ -534,6 +582,11 @@ def img_denoise_bm3d(img, sigma=0.01):
             img_stack = img.copy()
         img_d = img_stack.copy()
         n = img_stack.shape[0]
+        if sigma is None:
+            m = adaptive_threshold(img)
+            img_m = img * m
+            img_m = img_m[img_m > 0]
+            sigma = np.std(img_m)
         for i in range(n):
             img_d[i] = bm3d.bm3d(img_stack[i], sigma_psd=sigma, stage_arg=bm3d.BM3DStages.HARD_THRESHOLDING)
         return img_d
@@ -542,10 +595,14 @@ def img_denoise_bm3d(img, sigma=0.01):
         return img
 
 
-def img_denoise_bm3d_single(img, sigma=0.1):
+def img_denoise_bm3d_single(img, sigma=None):
     # img.shape =(100, 100)
     try:
-        # import bm3d
+        if sigma is None:
+            m = adaptive_threshold(img)
+            img_m = img * m
+            img_m = img_m[img_m > 0]
+            sigma = np.std(img_m)
         img_d = bm3d.bm3d(img, sigma_psd=sigma, stage_arg=bm3d.BM3DStages.HARD_THRESHOLDING)
         return img_d
     except Exception as err:
@@ -553,7 +610,7 @@ def img_denoise_bm3d_single(img, sigma=0.1):
         return img
 
 
-def img_denoise_bm3d_mpi(img, sigma=0.1, n_cpu=8):
+def img_denoise_bm3d_mpi(img, sigma=0.1, non_neg=True, n_cpu=8):
     max_cpu = round(cpu_count() * 0.8)
     n_cpu = min(n_cpu, max_cpu)
     n_cpu = max(n_cpu, 1)
@@ -566,20 +623,22 @@ def img_denoise_bm3d_mpi(img, sigma=0.1, n_cpu=8):
     pool.close()
     pool.join()
     img_d = np.array(res)
+    if non_neg:
+        img_d[img_d < 0] = 0
     return img_d
 
 
-def img_denoise_nl_single(img, patch_size=5, patch_distance=6):
+def img_denoise_nl_single(img, patch_size=5, patch_distance=6, f=2):
     img_d = img.copy()
     patch_kw = dict(patch_size=patch_size,  # 5x5 patches
                     patch_distance=patch_distance,  # 13x13 search area
                     )
     sigma_est = np.mean(estimate_sigma(img_d))
-    img_d = denoise_nl_means(img_d, h=1.2 * sigma_est, sigma=sigma_est, fast_mode=True, **patch_kw)
+    img_d = denoise_nl_means(img_d, h=f * sigma_est, sigma=sigma_est, fast_mode=True, **patch_kw)
     return img_d
 
 
-def img_denoise_nl(img, patch_size=5, patch_distance=6):
+def img_denoise_nl(img, patch_size=5, patch_distance=6, f=2):
     s = img.shape
     if len(s) == 2:
         img_stack = img.reshape(1, s[0], s[1])
@@ -588,11 +647,11 @@ def img_denoise_nl(img, patch_size=5, patch_distance=6):
     img_d = img_stack.copy()
     n = img_stack.shape[0]
     for i in range(n):
-        img_d[i] = img_denoise_nl_single(img_stack[i], patch_size, patch_distance)
+        img_d[i] = img_denoise_nl_single(img_stack[i], patch_size, patch_distance, f=f)
     return img_d
 
 
-def img_denoise_nl_mpi(img, patch_size=5, patch_distance=6, n_cpu=8):
+def img_denoise_nl_mpi(img, patch_size=5, patch_distance=6, f=2, n_cpu=8):
     max_cpu = round(cpu_count() * 0.8)
     n_cpu = min(n_cpu, max_cpu)
     n_cpu = max(n_cpu, 1)
@@ -604,13 +663,23 @@ def img_denoise_nl_mpi(img, patch_size=5, patch_distance=6, n_cpu=8):
     img_d = img_stack.copy()
     pool = Pool(n_cpu)
     res = []
-    partial_func = partial(img_denoise_nl_single, patch_size=patch_size, patch_distance=patch_distance)
+    partial_func = partial(img_denoise_nl_single, patch_size=patch_size, patch_distance=patch_distance, f=f)
     for result in tqdm(pool.imap(func=partial_func, iterable=img), total=len(img)):
         res.append(result)
     pool.close()
     pool.join()
     img_d = np.array(res)
     return img_d
+
+def img_denoise_nl_3D(img3D, sigma=None, patch_size=5, patch_distance=5, f=1.5, non_neg=True):
+    if sigma is None:
+        sigma = np.mean(estimate_sigma(img3D, channel_axis=None))
+    denoised_3d = denoise_nl_means(img3D, h=f*sigma,
+                               fast_mode=True, patch_size=patch_size,
+                               patch_distance=patch_distance)
+    if non_neg:
+        denoised_3d[denoised_3d < 0] = 0
+    return denoised_3d
 
 
 def img_fillhole(img, binary_threshold=0.5):
@@ -766,7 +835,7 @@ def image_movie(data, ax=None, cmap='gray'):
     return tracker
 
 
-def plot3D(data, axis=0, index_init=None, clim=[], cmap='rainbow'):
+def plot3D(data, axis=0, index_init=None, clim=[], cmap='viridus'):
     fig, ax = plt.subplots()
     if index_init is None:
         index_init = int(data.shape[axis] // 2)
@@ -826,3 +895,412 @@ def update_img_with_mask_comp(img, mask_comp, method='median'):
                     c += t * mask_comp[j]
         img1[i] = c
     return img1
+
+def load_image_stack(
+    fpath='.',
+    file_format='tiff',
+    num=None,
+    output_size=(512, 512)
+):
+    """
+    Load image files into a 3D stack with consistent size.
+
+    Returns
+    -------
+    img_stack : ndarray
+        Shape (N, H, W)
+    """
+    pattern = os.path.join(fpath, f'*.{file_format}')
+    files = sorted(glob.glob(pattern))
+
+    if len(files) == 0:
+        raise FileNotFoundError(
+            f'No .{file_format} files found in {fpath}'
+        )
+
+    if num is not None:
+        files = files[:num]
+
+    def img_as_float32(img):
+        """
+        Convert an image to float32.
+
+        Integer images are normalized to [0, 1].
+        Floating-point images are converted to float32.
+
+        Parameters
+        ----------
+        img : ndarray
+
+        Returns
+        -------
+        ndarray
+            float32 image.
+        """
+        img = np.asarray(img)
+
+        if np.issubdtype(img.dtype, np.floating):
+            return img.astype(np.float32)
+
+        elif np.issubdtype(img.dtype, np.integer):
+            info = np.iinfo(img.dtype)
+            return img.astype(np.float32) / info.max
+
+        else:
+            raise TypeError(f"Unsupported image dtype: {img.dtype}")
+
+    def preprocess(img):
+        # PNG: normalize to [0,1]
+        if file_format.lower() == 'png':
+            img = img_as_float32(img)
+
+        # RGB/RGBA -> grayscale
+        if img.ndim == 3:
+            img = img[..., :3].mean(axis=-1)
+
+        if output_size is not None:
+            img = resize(
+                img,
+                output_size,
+                #anti_aliasing=True,
+                #preserve_range=True
+            )
+
+        return img.astype(np.float32)
+
+    processed = []
+
+    for fname in tqdm(
+        files,
+        desc="Loading images",
+        unit="img"
+    ):
+        if file_format == 'npy':
+            img = np.load(fname)
+        else:
+            img = io.imread(fname)
+        img = preprocess(img)
+        processed.append(img)
+
+    img_stack = np.stack(processed, axis=0)
+
+    return img_stack
+
+
+def save_image_stack(img_stack, prefix='gt_img', start_id=0):
+    n = len(img_stack)
+    for i in trange(n):
+        fsave = f'{prefix}_{start_id+i:05d}.tiff'
+        io.imsave(fsave, img_stack[i].astype(np.float32))
+
+
+def join_img_from_folder(folders=[], n_file_in_folder=[], file_format='tiff', save_prefix='gt_img'):
+    """
+    folders: [f1, f2, f3 ... ]
+    n_file_in_folder : list of int, e.g., [n1, n2, n3, ...]
+                       will select n1 files from f1, n2 files from f2, and ...
+
+    """
+    n = len(folders)
+    fn = []
+    if len(n_file_in_folder) == 0:
+        n_file_in_folder = [10000] * n
+    for i in range(n):
+        pattern = os.path.join(folders[i], f'*.{file_format}')
+        ftmp = sorted(glob.glob(pattern))
+        ftmp = ftmp[:n_file_in_folder[i]]
+        fn += ftmp
+    nn = len(fn)
+    for i in trange(nn):
+        img = io.imread(fn[i])
+        fsave = f'{save_prefix}_{i:05d}.{file_format}'
+        io.imsave(fsave, img.astype(np.float32))
+
+def display_recon(recon_dict, sli=None, msg=''):
+    """
+    recon: dict
+    recon[id][elem].shape = (100, 200, 200)
+    """
+    rec = recon_dict
+    keys = np.sort(list(rec.keys()))
+    n = len(keys)
+    n_r = int(np.sqrt(n))
+    n_c = int(np.ceil(n / n_r))
+    fig, ax = plt.subplots(nrows=n_r, ncols=n_c, figsize=(9, 5))
+    id_img = 0
+    for i in range(n_r):
+        for j in range(n_c):
+            if id_img < n:
+                img = np.array(rec[keys[i * n_c + j]])
+                s = img.shape
+                if sli is None:
+                    sli = s[0] // 2
+                im = ax[i, j].imshow(img[sli])
+                ax[i, j].set_title(keys[i * n_c + j])
+                fig.colorbar(im, ax=ax[i, j])
+
+            ax[i, j].axis('off')
+            id_img += 1
+    if len(msg):
+        msg += ', '
+    plt.suptitle(f'{msg}slice = {sli}')
+    plt.tight_layout()
+
+def kmean_average(img, n_comp=2):
+    img_avg = np.zeros_like(img)
+    img_one = np.ones_like(img)
+    kmeans = MiniBatchKMeans(
+        n_clusters=n_comp,
+        batch_size=4096,
+        random_state=0
+    )
+    X = img.flatten().reshape(-1, 1)
+    labels = kmeans.fit_predict(X)
+    seg = labels.reshape(img.shape)
+
+    for i in range(n_comp):
+        idx = seg == i
+        val_avg = np.sum(img*idx)/np.sum(idx)
+        img_avg += img_one * idx * val_avg
+    return img_avg
+
+
+def generate_deformed_circle(shape=(200, 200), radius=100, max_deformation=30, smoothness=8):
+    """
+    Generates a binary image of a circle deformed strictly inwards.
+
+    Parameters:
+    - shape (tuple): The size of the output image (height, width).
+    - radius (int): The original radius of the circle.
+    - max_deformation (int): Maximum pixels the boundary can deform inwards.
+    - smoothness (float): Standard deviation for Gaussian kernel. Higher = smoother.
+    """
+    height, width = shape
+    center_y, center_x = height // 2, width // 2
+
+    # 1. Create a grid of coordinates centered at (0,0)
+    y, x = np.ogrid[-center_y:height - center_y, -center_x:width - center_x]
+
+    # 2. Convert Cartesian grid coordinates to polar coordinates (r, theta)
+    pixel_r = np.sqrt(x ** 2 + y ** 2)
+    pixel_theta = np.arctan2(y, x)  # Returns values between -pi and pi
+
+    # 3. Generate smooth, periodic random noise for the boundary deformation
+    # We sample 360 points corresponding to angles from -pi to pi
+    num_angles = 360
+    angles = np.linspace(-np.pi, np.pi, num_angles, endpoint=False)
+
+    # Generate random negative values to force inward deformation
+    raw_noise = -np.random.uniform(0, max_deformation, size=num_angles)
+
+    # Wrap the noise periodically before smoothing to prevent a visible seam at -pi/pi
+    padded_noise = np.tile(raw_noise, 3)
+    smoothed_padded = gaussian_filter1d(padded_noise, sigma=smoothness)
+    smoothed_noise = smoothed_padded[num_angles:2 * num_angles]
+
+    # 4. Map the smoothed noise back to the image grid based on pixel angles
+    # Map pixel_theta from [-pi, pi] to an index in our noise array [0, 359]
+    angle_indices = ((pixel_theta + np.pi) / (2 * np.pi) * num_angles).astype(int)
+    angle_indices = np.clip(angle_indices, 0, num_angles - 1)
+
+    # 5. Calculate the new dynamic boundary radius for every pixel coordinate
+    dynamic_radius = radius + smoothed_noise[angle_indices]
+
+    # 6. Create the binary mask (1 inside the deformed shape, 0 outside)
+    mask = (pixel_r < dynamic_radius).astype(np.uint8)
+
+    return mask
+
+def circ_mask_random_deform(img, ratio_range=[0.4, 1], smoothness=8):
+    s = img.shape
+    if len(s) == 2:
+        im_m = img[np.newaxis]
+    else:
+        im_m = img.copy()
+    s = im_m.shape
+    m_stack = np.zeros_like(im_m)
+    for i in trange(im_m.shape[0]):
+        r = np.random.uniform(ratio_range[0], ratio_range[1])
+        r = min(r, 1)
+        radius = min(s[1], s[2]) // 2
+        max_deformation = int(radius * (1-r))
+        mask = generate_deformed_circle(shape=(s[1], s[2]),
+                                        radius=radius,
+                                        max_deformation=max_deformation,
+                                        smoothness=smoothness
+                                        )
+        im_m[i] = im_m[i] * mask
+        m_stack[i] = mask
+    return im_m, m_stack
+
+def non_uniform_deform_image(image, max_deformation=15, smoothness=10, order=3):
+    """
+    Applies non-uniform, smooth elastic deformation to a 2D grayscale image.
+
+    Parameters:
+    - image (np.ndarray): 2D grayscale image to deform.
+    - max_deformation (float): Maximum pixel displacement in any direction.
+    - smoothness (float): Standard deviation of the Gaussian filter.
+                          Higher values yield smoother, broader distortions.
+    - order (int): Spline interpolation order (0: nearest, 1: bilinear, 3: bicubic).
+                   Order 3 provides the smoothest visual result.
+    """
+    height, width = image.shape
+
+    # 1. Create a baseline pixel coordinate grid
+    # map_coordinates expects grid arrays matching the image shape
+    y_grid, x_grid = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
+
+    # 2. Generate raw, independent random noise for both X and Y directions
+    # Scaled to the max_deformation range
+    dx_raw = np.random.uniform(-max_deformation, max_deformation, size=(height, width))
+    dy_raw = np.random.uniform(-max_deformation, max_deformation, size=(height, width))
+
+    # 3. Smooth the noise fields locally to create a continuous, elastic warp
+    # This matches the logic of your circle's `gaussian_filter1d` but in 2D
+    dx_smooth = gaussian_filter(dx_raw, sigma=smoothness)
+    dy_smooth = gaussian_filter(dy_raw, sigma=smoothness)
+
+    # 4. Normalize the displacements so they respect the requested max_deformation
+    # (Smoothing inherently reduces the peak values, so we scale them back up)
+    if np.max(np.abs(dx_smooth)) > 0:
+        dx_smooth = (dx_smooth / np.max(np.abs(dx_smooth))) * max_deformation
+    if np.max(np.abs(dy_smooth)) > 0:
+        dy_smooth = (dy_smooth / np.max(np.abs(dy_smooth))) * max_deformation
+
+    # 5. Add displacements to the original coordinate grid
+    # `map_coordinates` requires a stacked coordinates array of shape (2, height, width)
+    map_y = y_grid + dy_smooth
+    map_x = x_grid + dx_smooth
+    coords = np.array([map_y, map_x])
+
+    # 6. Remap the image pixels to the deformed coordinate map
+    # 'reflect' mode handles boundaries cleanly without leaving black borders
+    deformed_image = map_coordinates(image, coords, order=order, mode='reflect')
+
+    return deformed_image
+
+
+def poly2D_image(shape=(200, 200), order=3, z_range=(0, 1)):
+    """
+    Generates a 2D image based on an n-th order polynomial function f(x, y)
+    with random coefficients, normalized to a custom target range.
+
+    Parameters:
+        shape (tuple): The (height, width) dimensions of the output image.
+        order (int): The maximum total degree (n) of the polynomial.
+        z_range (tuple): Target (z_low, z_high) scale for the output values.
+
+    Returns:
+        np.ndarray: A 2D array of the specified shape within z_range.
+    """
+    # 1. Create spatial coordinate grids
+    x = np.linspace(-1, 1, shape[1])
+    y = np.linspace(-1, 1, shape[0])
+    X, Y = np.meshgrid(x, y)
+
+    # 2. Dynamically count required coefficients and build polynomial terms
+    # Total terms for 2D polynomial of degree n is: (n + 1) * (n + 2) / 2
+    terms = []
+    for i in range(order + 1):
+        for j in range(order + 1 - i):
+            terms.append((X ** i) * (Y ** j))
+
+    num_coefficients = len(terms)
+
+    # 3. Generate random coefficients for each valid term
+    a = np.random.uniform(-5, 5, num_coefficients)
+
+    # 4. Compute the polynomial function Z
+    Z = np.zeros_like(X)
+    for coef, term in zip(a, terms):
+        Z += coef * term
+
+    # 5. Normalize Z initially to (0, 1) safely
+    Z_min = Z.min()
+    Z_max = Z.max()
+
+    if Z_max != Z_min:
+        Z_norm = (Z - Z_min) / (Z_max - Z_min)
+    else:
+        Z_norm = np.zeros_like(Z)
+
+    # 6. Rescale to requested custom (z_low, z_high) range
+    z_low, z_high = z_range
+    Z_final = Z_norm * (z_high - z_low) + z_low
+
+    return Z_final
+
+"""
+def generate_poly_bkg_stack(shape=(200, 200), order=3, z_range=(0, 1)):
+    img_poly = np.zeros(shape)
+    if len(shape) == 2:
+        img_poly = img_poly[np.newaxis]
+    s = img_poly.shape
+    n = s[0]
+    for i in range(n):
+        img_poly[i] = poly2D_image((s[1], s[2]), order, z_range)
+    return img_poly
+"""
+
+def generate_poly_bkg_stack(shape=(10, 200, 200), order=3, z_range=(0, 1)):
+    """
+    Optimized batch generation of 2D polynomial images using 3D NumPy broadcasting.
+
+    Parameters:
+        shape (tuple): (num_images, height, width) or (height, width).
+        order (int): The maximum total degree (n) of the polynomial.
+        z_range (tuple): Target (z_low, z_high) scale for the output values.
+    """
+    # 1. Handle shape input to guarantee a 3D stack shape: (N, H, W)
+    if len(shape) == 2:
+        shape = (1, shape[0], shape[1])
+
+    n_imgs, h, w = shape
+
+    # 2. Pre-compute spatial grids for a single 2D slice
+    x = np.linspace(-1, 1, w)
+    y = np.linspace(-1, 1, h)
+    X, Y = np.meshgrid(x, y)
+
+    # 3. Dynamically build the polynomial terms for 1 slice
+    terms = []
+    for i in range(order + 1):
+        for j in range(order + 1 - i):
+            terms.append((X ** i) * (Y ** j))
+
+    # Stack terms into a 3D array of shape (num_terms, H, W)
+    terms_stack = np.stack(terms, axis=0)
+    num_coefficients = terms_stack.shape[0]
+
+    a = np.random.uniform(-5, 5, size=(n_imgs, num_coefficients, 1, 1))
+
+    # 5. Compute polynomial for the entire batch via broadcasting
+    # (N, num_terms, 1, 1) * (1, num_terms, H, W) -> Sum over terms axis (axis=1)
+    # Resulting Z shape: (N, H, W)
+    Z = np.sum(a * terms_stack[np.newaxis, ...], axis=1)
+
+
+    Z_min = Z.min(axis=(1, 2), keepdims=True)
+    Z_max = Z.max(axis=(1, 2), keepdims=True)
+
+    # Prevent division by zero if a slice is perfectly flat
+    range_mask = (Z_max != Z_min)
+    Z_norm = np.zeros_like(Z)
+
+    # Vectorized conditional assignment
+    np.divide(Z - Z_min, Z_max - Z_min, out=Z_norm, where=range_mask)
+
+    # 7. Rescale entire stack to requested custom (z_low, z_high) range
+    z_low, z_high = z_range
+    Z_final = Z_norm * (z_high - z_low) + z_low
+
+    return Z_final
+
+def image_value_substitution(img, val_old, val_new, threshold=0.01, mask=1):
+    idx = np.abs(img - val_old) < threshold
+    img_new = img.copy()
+    img_new[idx] = val_new
+    img_new *= mask
+    return img_new
+

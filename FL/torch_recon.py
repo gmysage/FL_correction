@@ -57,8 +57,8 @@ def torch_mlem_recon_batch(C_init,  # (n_ref, n_sli, H, W)
                     n_iter = 50,
                     beta = 1e-3,
                     delta = 0.01,
-                    device = 'cuda'
-                    ):
+                    device = 'cuda',
+                    return_numpy=True):
     if len(C_init.shape) == 3:
         C_init = C_init[:, np.newaxis]
     if len(prjs.shape) == 2:
@@ -95,5 +95,6 @@ def torch_mlem_recon_batch(C_init,  # (n_ref, n_sli, H, W)
                           beta,
                           delta
                           )
-    rec = rec.cpu().numpy()
+    if return_numpy:
+        rec = rec.cpu().numpy()
     return rec

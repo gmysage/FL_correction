@@ -5,6 +5,7 @@ from skimage import morphology, io, filters
 from skimage.morphology import disk
 import porespy as ps
 import glob
+from skimage.filters import gaussian as gf
 
 def circle_mask(img, ratio=1, val=0):
     s = img.shape
@@ -267,13 +268,13 @@ def gen_gt_image_sphere():
     img_slice = []
     for i in trange(500): # 1000 3D structure
         n_ball = np.random.randint(30, 100)
-        """
+
         if np.random.random() > 0.5:
             allow_overlap = True 
         else:
             allow_overlap = False
-        """
-        allow_overlap=False
+
+        #allow_overlap=False
         g1 = np.random.uniform(0.3, 0.5)
         g2 = np.random.uniform(0.6, 1.5)
         gradient_range = np.sort([g1, g2])
@@ -293,6 +294,7 @@ def gen_gt_image_sphere():
         m = np.sort(m)[int(len(m)*0.96)]
         img3D = img3D / m
 
+        """
         # generate hole mask
         t = np.random.random()
         if t > 0.7: 
@@ -303,7 +305,7 @@ def gen_gt_image_sphere():
             num = int(np.random.uniform(500, 10000))
             m_c, im = gen_crack_mask(shape3D, num)
             img3D *= m_c
-        
+        """
         # apply circle mask
         c_ratio = np.random.uniform(0.6, 0.98)
         img3D = circle_mask(img3D, ratio=c_ratio, val=0)
@@ -315,24 +317,24 @@ def gen_gt_image_sphere():
     
 def gen_gt_image_poly():
     fn_root = '/data/FL_correction/FL_2/gt_image2'
-    idx_start = 1000
+    idx_start = 500
     shape3D = (32, 200, 200)
     img_slice2 = []
-    for i in trange(1000):
+    for i in trange(500):
         num = int(np.random.uniform(200, 1000))
         m_c, im = gen_crack_mask(shape3D, num, d_range=[0, 1])
-        n = int(np.random.uniform(num/10, num/1.5))
+        n = int(np.random.uniform(num/5, num/1.5))
         a, im_s, c = random_select_poly(im, n)
         
         c_ratio = np.random.uniform(0.5, 0.95)
         img3D = circle_mask(im_s, ratio=c_ratio, val=0)
         img3D = img3D / np.max(img3D) /np.random.uniform(0.9, 1.5)
-        
+        """
         # add holes
         t = np.random.random()
         if t > 0.7: 
             img3D = add_hole(img3D, [1000, 10000], [1,1.5])
-
+        """
         img_slice2.append(img3D[0])
         fsave = f'{fn_root}/img_gt_{i+idx_start:04d}.tiff'
         io.imsave(fsave, img3D.astype(np.float32))
@@ -340,11 +342,12 @@ def gen_gt_image_poly():
 
 
 def gen_gt_image_porespy():
-    fn_root = '/data/FL_correction/FL_2/gt_image_porespy'
-    idx_start = 0
+    #fn_root = '/data/FL_correction/FL_2/gt_image_porespy'
+    fn_root = '/data/FL_correction/FL_2/gt_image2'
+    idx_start = 1000
     shape3D = (32, 200, 200)
     img_slice3 = []
-    for i in trange(1000):
+    for i in trange(500):
         n1, n2, n3 = np.random.randint(1, 4, 3)
         im_s = ps.generators.blobs(shape=shape3D, porosity=None, blobiness=[n1, n2, n3])
         c_ratio = np.random.uniform(0.6, 0.98)
@@ -358,14 +361,16 @@ def gen_gt_image_porespy():
 
 
 def gen_noisy_image():
-    fn_gt_root = '/data/FL_correction/FL_2/gt_image'
+    fn_gt_root = '/data/FL_correction/FL_2/gt_image2'
     fn_gt = np.sort(glob.glob(fn_gt_root + '/*'))
     n = len(fn_gt)
     device = 'cuda'
+    img_rec_sli = []
     for i in trange(n):
         #angle_e = int(np.random.uniform(160, 180))
         angle_e = 180
-        n_inv = np.random.randint(2, 4)
+        #n_inv = np.random.randint(1, 3)
+        n_inv = 1
         angle_list = np.arange(0, angle_e, n_inv)
         fn_id = fn_gt[i].split('/')[-1][:-5].split('_')[-1]
         img3D = io.imread(fn_gt[i])
@@ -378,10 +383,13 @@ def gen_noisy_image():
                                     use_ref=False,
                                     device=device
                                     )
-        ph = np.random.randint(1000, 5000)
+        #ph = np.random.randint(1000, 4000)
+        ph = 5000
         C_init = np.ones_like(img3D[np.newaxis])
-        prj_n = np.random.poisson(prj* ph)/ph   
-        n_iter = np.random.randint(50, 80)
+        prj_max = np.max(prj)
+        prj_n = np.random.poisson(prj / prj_max * ph)/ph * prj_max
+        #n_iter = np.random.randint(50, 80)
+        n_iter=50
         rec = FL.torch_mlem_recon_batch(C_init,  # (n_ref, n_sli, H, W)
                     prj_n,           # (n_angle, n_sli, W)
                     angle_list,     # (n_angle)
@@ -395,13 +403,18 @@ def gen_noisy_image():
                     device = device
                     )
         rec = rec[0]
-        fsave_rec = f'/data/FL_correction/FL_2/noisy_image/img_noise_{fn_id}.tiff'
-        fsave_prj = f'/data/FL_correction/FL_2/proj_image/prj_{fn_id}.tiff'
-        fsave_angle = f'/data/FL_correction/FL_2/proj_image/angle_{fn_id}.txt'
+        rec_max = np.max(rec)
+        rec = np.random.poisson(rec / rec.max() * 100) / 100 * rec_max
+        k = np.random.uniform(0.5, 1.2)
+        rec = gf(rec, k)
+        img_rec_sli.append(rec[16])
+        fsave_rec = f'/data/FL_correction/FL_2/noisy_image2/img_noise_{fn_id}.tiff'
+        fsave_prj = f'/data/FL_correction/FL_2/proj_image2/prj_{fn_id}.tiff'
+        fsave_angle = f'/data/FL_correction/FL_2/proj_image2/angle_{fn_id}.txt'
         io.imsave(fsave_rec, rec.astype(np.float32))
         io.imsave(fsave_prj, prj_n.astype(np.float32))
         np.savetxt(fsave_angle, angle_list)
-
+    img_rec_sli = np.array(img_rec_sli)
 
 
 def gen_noisy_super_fast_tomo_image():
@@ -469,3 +482,19 @@ def gen_noisy_super_fast_tomo_image():
 
         img_slice3.append(rec_n[16])
     img_slice3 = np.array(img_slice3)
+
+def gen_gaussian_blur():
+    f_root = '/data/denoise/RRDB'
+    blur_dir = f_root + '/blur_images'
+    gt_dir = f_root + '/gt_images'
+    fn_gt = np.sort(glob.glob(gt_dir + '/*'))
+    for i in trange(len(fn_gt)):
+        img = io.imread(fn_gt[i])
+        k = np.random.uniform(1, 2.5)
+        img_b = gf(img, k)
+        ph = np.random.randint(100, 500)
+        img_m = np.max(img_b)
+        img_b = np.random.poisson(img_b / img_m * ph)/ph * img_m
+        fn_save = blur_dir + f'/img_blur_{i:04d}.tiff'
+        io.imsave(fn_save, img_b.astype(np.float32))
+

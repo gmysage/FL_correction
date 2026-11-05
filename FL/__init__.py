@@ -33,4 +33,8 @@ try:
 except ImportError as e:
     _HAS_CUDA = False
     print(e)
-from .cuda_lib.autograd import forward_emission_autograd, forward_emission_batch_autograd
+from .cuda_lib.autograd import (
+    forward_emission_autograd,
+    forward_emission_batch_autograd,
+    cal_atten_autograd
+)

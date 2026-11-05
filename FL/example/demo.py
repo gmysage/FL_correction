@@ -58,11 +58,57 @@ eng_list = param['eng_list']
 ######################################
 
 # update emission cross-section
-param['em_cs'], _, _ = FL.update_emission_xray_cs_with_ref(param['em_cs'], (ref1, ref2), elem='Ni', ref_ratio=[], plot_flag=True)
+param['em_cs'], simu_eng, simu_em_cs = FL.update_emission_xray_cs_with_ref(param['em_cs'], (ref1, ref2), elem='Ni', ref_ratio=[], plot_flag=True)
 
 # update incident x-ray absorption cross-section
-param['cs'], _, _ = FL.update_incident_xray_cs_with_ref(param['cs'], (ref1, ref2), elem='Ni', ref_ratio=[], plot_flag=True)
+param['cs'], simu_eng, simu_cs = FL.update_incident_xray_cs_with_ref(param['cs'], (ref1, ref2), elem='Ni', ref_ratio=[], plot_flag=True)
 
+def plot_spec_tmp():
+    # plot ref spectrum
+    fig, ax = plt.subplots(figsize=(5.5,5))
+    ax.plot(ref1[:, 0], ref1[:, 1], linewidth=1.5, label='ref_NiO')
+    ax.plot(ref2[:, 0], ref2[:, 1], linewidth=1.5, label='ref_LiNiO2')
+    ax.set_xlim(8.25, 8.65)
+    ax.set_xlabel('X-ray Energy (keV)', fontsize=12)
+    ax.set_ylabel('Normalized absorption', fontsize=12)
+    ax.tick_params(axis='x', labelsize=12)
+    ax.tick_params(axis='y', labelsize=12)
+    ax.legend()
+
+    # plot cs absorption
+    x1 = param['cs']['simu_LiNiO2-x_ref1_eng']
+    x2 = param['cs']['simu_LiNiO2-x_ref2_eng']
+    y1 = param['cs']['simu_LiNiO2-x_ref1']
+    y2 = param['cs']['simu_LiNiO2-x_ref2']
+    fig, ax = plt.subplots(figsize=(5.5,5))
+
+    ax.plot(x1, y1, linewidth=1.5, label='cs_NiO')
+    ax.plot(x2, y2, linewidth=1.5, label='cs_LiNiO2')
+    ax.plot(simu_eng, simu_cs, '--', linewidth=1.2, color='red', label='Xraylib: Ni K-edge')
+    ax.set_xlim(8.25, 8.65)
+    ax.set_xlabel('X-ray Energy (keV)', fontsize=12)
+    ax.set_ylabel('Cross-section (cm^2/g)', fontsize=12)
+    ax.set_title('X-ray absorption', fontsize=12)
+    ax.tick_params(axis='x', labelsize=12)
+    ax.tick_params(axis='y', labelsize=12)
+    ax.legend()
+
+    # plot em-cs absorption
+    x1 = param['em_cs']['simu_Ni_ref1_eng']
+    x2 = param['em_cs']['simu_Ni_ref2_eng']
+    y1 = param['em_cs']['simu_Ni_ref1']
+    y2 = param['em_cs']['simu_Ni_ref2']
+    fig, ax = plt.subplots(figsize=(5.5,5))
+    ax.plot(x1, y1, linewidth=1.5, label='em_cs_NiO')
+    ax.plot(x2, y2,  linewidth=1.5, label='em_cs_LiNiO2')
+    ax.plot(simu_eng, simu_em_cs, color='red', linestyle='dashed', linewidth=1.2, label='Xraylib: Ni K-edge')
+    ax.set_xlim(8.25, 8.65)
+    ax.set_xlabel('X-ray Energy (keV)', fontsize=12)
+    ax.set_ylabel('Cross-section (cm^2/g)', fontsize=12)
+    ax.set_title('X-ray emission', fontsize=12)
+    ax.tick_params(axis='x', labelsize=12)
+    ax.tick_params(axis='y', labelsize=12)
+    ax.legend()
 ######################################
 # 1.5 calculate and save ground-truth attenuation to ./Angle_prj 
 ######################################
@@ -83,7 +129,7 @@ raw3D['Mn'] = Mn   #* pix_mole
 raw_gt = FL.pre_treat(list(raw3D[ele] for ele in elem_type))
 
 max_l = Ni.shape[1] # 160
-detector_mask = mask3D[f'max_l']
+detector_mask = mask3D[f'{max_l}']
 rho = 4.63
 
 # use referece spectrum to interplate the absorption cross-section
@@ -127,7 +173,7 @@ FL.cal_total_atten_at_angles(fsave, param)
 fsave = fn_root + f'/Angle_prj_bin{bining}_test'
 prj = {}
 prj_clean = {}
-ph = 4000
+ph = 5000
 for elem in ['Co', 'Mn']:
     att_ele = FL.read_attenuation_at_all_angle(angle_list, fsave, elem, 'all')
     img_ele = raw3D[elem]
@@ -158,7 +204,8 @@ for ele in elem_type:
     #fsave_prj = fn_root + f'/gt_img/xrf_prj_gt_{ele}_bin{bining}.tiff'
     fsave_prj = fn_root + f'/gt_img/xrf_prj_gt_{ele}_bin{bining}_noise.tiff'
     io.imsave(fsave_prj, prj[ele].astype(np.float32))
-
+    fsave_clean_prj = fn_root + f'/gt_img/xrf_prj_gt_{ele}_bin{bining}_clean.tiff'
+    io.imsave(fsave_clean_prj, prj_clean[ele].astype(np.float32))
 ############################################################################
 
 ############################
@@ -228,7 +275,7 @@ for elem in ['Ni']: # Ni2, Ni3
     recon[0]['Ni'] = rec[0] + rec[1]
 te = time.time()
 t_iter.append(te-ts)
-save_recon(recon, fn_root, idx=None) 
+FL.save_recon(recon, fn_root, idx=None)
 
 
 ###### iterations ####
@@ -333,7 +380,7 @@ for it in range(1, 3):
         recon[it]['Ni'] = rec[0] + rec[1]
     te = time.time()
     t_iter.append(te-ts)
-    save_recon(recon, fn_root, None)
+    FL.save_recon(recon, fn_root, None)
 
 # each recon on Ni (160, 160, 160) (1000 EM steps) takes about 250 sec (~6min)
 # each recon on Mn/Co (160, 160, 160) (100 EM steps) takes about 25 sec (~0.5 min)
@@ -349,7 +396,7 @@ for it in range(1, 3):
 fn_recon = fn_root +'/recon'
 recon, n_iter = FL.load_recon(fn_recon) 
 
-it_pre = 1
+it_pre = 3
 cur_recon = recon[it_pre]
 cur_recon['Ni'] = cur_recon['Ni2'] + cur_recon['Ni3']  
 
@@ -380,7 +427,7 @@ atten_xray = FL.read_attenuation_at_all_angle(angle_list, f_xrf, 'Ni', 'xray')  
 atten_xray_cuda = torch.from_numpy(atten_xray).float().to(device) 
 atten_cuda = atten_xrf_cuda * atten_xray_cuda
 
-beta = 0.5
+beta = 0.01
 delta=1e-3
 
 
@@ -393,12 +440,16 @@ for p in model_3DUNet.parameters():
 unfreeze_last_layer(model_3DUNet)
 """
 
-model_3DUNet = load_default_3DUNet_model(device=device)
+model_2DRRDB = FL.RRDBNet(1, 1, 16, 4, 32).to(device)
+model_2DRRDB_path = '/media/mingyuan/Data/denoise/train_RRDB/model_saved_256/model_0599.pth'
+model_2DRRDB.load_state_dict(torch.load(model_2DRRDB_path, map_location=device))
+
+model_3DUNet = FL.load_default_3DUNet_model(device=device)
 model_3DUNet.freeze_encoder()
 
 optimizer = torch.optim.Adam(
     filter(lambda p: p.requires_grad, model_3DUNet.parameters()),
-    lr=1e-5
+    lr=1e-4
 ) 
 
 C_hist = []
@@ -408,14 +459,14 @@ C_cuda = torch.from_numpy(C_init).float().to(device)
 C = C_cuda.clone()
 flag_update_atten = True
 
-n_update_atten = 20 
+n_update_atten = 100
 
-for it in trange(100):
-    print(f'Iter : {it}  ')
+for ii in trange(100):
+    print(f'Iter : {ii}  ')
     model_3DUNet.train()
     optimizer.zero_grad(set_to_none=True)
     # cal_incident x-ray _atten
-    if (it+1) % n_update_atten == 0:
+    if (ii+1) % n_update_atten == 0:
         f_xray = fn_root + '/Angle_prj_tmp'
         FL.cal_xray_atten_at_angles(frac_4D_it, 
                                     param, 
@@ -438,6 +489,7 @@ for it in trange(100):
                                 beta,
                                 delta
                                 )
+
     
     #t = C.detach()
     #t = t[t>0.01]
@@ -458,7 +510,7 @@ for it in trange(100):
     loss_tv = FL.gradient_loss(C_d)
 
     loss = 1e3 * loss_mse + 1 * loss_poisson + 0.1 * loss_tv
-    print(f'Iter: {it} | '
+    print(f'Iter: {ii} | '
           f'total loss: {loss.item():.5e} | '
           f'mse loss: {loss_mse.item():.5e} | '
           f'tv loss: {loss_tv.item():.5e} | '
@@ -467,7 +519,6 @@ for it in trange(100):
     loss_hist['mse'].append(loss_mse.item())
     loss_hist['poisson'].append(loss_poisson.item())
     loss_hist['tv'].append(loss_tv.item())
-    loss_hist['tv'].append(loss_tv.item())
     loss_hist['total'].append(loss.item())
 
     optimizer.zero_grad()
@@ -475,22 +526,25 @@ for it in trange(100):
     optimizer.step()
 
     C_cpu = C_d.detach().cpu().numpy()
-    if (it+1) % n_update_atten == 0:
+    if (ii+1) % n_update_atten == 0:
 
         C_cpu = C_d.detach().cpu().numpy()
+        for i in range(len(C_cpu)):
+            C_cpu[i] = FL.img_denoise_bm3d_mpi(C_cpu[i], sigma=0.04)
+
         cur_recon['Ni'] = np.sum(C_cpu, axis=0)
         rec_iter = FL.pre_treat(list(cur_recon[ele] for ele in elem_type))
-        res = FL.cal_frac(rec_iter, scale_range=[0.02, 0.99], enable_scale=True, scale_limit=0.99)
+        res = FL.cal_frac(rec_iter, scale_range=[0.02, 0.99], enable_scale=False, scale_limit=0.99)
         frac_4D_it = torch.from_numpy(res['frac']).float().to(device)
         dict_use_ref['ref_3D'] = C_cpu
 
     C_hist.append(C_cpu[0, 80])
-    if (it) % n_update_atten == 0:
+    if (ii) % n_update_atten == 0:
     #if True:
         p = Pf.detach().cpu().numpy()
 
         plt.figure(figsize=(10, 8))
-        plt.suptitle(f'iter = {it:02d}')
+        plt.suptitle(f'iter = {ii:02d}')
         plt.subplot(221);plt.imshow(C_cpu[0, 80], clim=[0, 0.62])
         plt.title('rec');plt.colorbar()
         plt.subplot(222);plt.imshow(C_cpu[0, 80]-Ni2[80], clim=[-0.08, 0.08], cmap='Spectral_r')

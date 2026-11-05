@@ -10,9 +10,9 @@ import xraylib
 import time
 from scipy import ndimage
 from numba import jit, njit, prange, cuda
-from .numba_util import *
-from .image_util import *
-from .util import *
+from numba_util import *
+from image_util import *
+from util import *
 from skimage import io
 from tqdm import tqdm, trange
 from multiprocessing import Pool, cpu_count

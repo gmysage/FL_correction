@@ -2,7 +2,9 @@ import xraylib
 import numpy as np
 import matplotlib.pyplot as plt
 from .util import interp_line, normalize_1D_xanes, exclude_eng
+import FL
 from scipy.optimize import least_squares
+
 
 def compose_compound(comp, ratio):
     # e.g. comp = ['LiNiO2', 'LiCoO2', 'LiMnO2']
@@ -59,7 +61,7 @@ def compose_cs_incident_xray_with_reference(ref_3D, ref_cs, ref_comp):
     ref_spec = np.zeros(n_ref)
     for i_ref in range(n_ref):
         ref_spec[i_ref] = ref_cs[f'{ref_comp}-x_ref{i_ref + 1}']
-    ref_frac = cal_frac(ref_3D, scale_range=[], enable_scale=False)['frac']
+    ref_frac = FL.cal_frac(ref_3D, scale_range=[0.01, 0.99], enable_scale=False, scale_limit=0.99)['frac']
     cs_3D = 0
     for i_ref in range(n_ref):
         cs_3D += ref_spec[i_ref] * ref_frac[i_ref]
@@ -209,9 +211,9 @@ def spectrum_residual_composition_thickness(init_guess, x_data, y_data, composit
     xx = np.round(xx, 3)
     yy = np.round(yy, 3)
     zz = np.round(zz, 3)
-    xx = min(1, xx)
-    yy = min(1, yy)
-    zz = min(1, zz)
+    xx = min(1., xx)
+    yy = min(1., yy)
+    zz = min(1., zz)
     thick = max(thick, 1e-6)
     ratio = [xx, yy, zz]
     compound = compose_compound(composition_list, ratio)
